@@ -13,7 +13,37 @@ repository root.
 | `config/game.toml` | written by `xbe_symbols`: 130 of 238 XDK functions and 11 of 12 data symbols located |
 | Recompilation | 15,942 functions, 910,100 instructions, 64 partitions |
 | Native build | `out/build/release/Urbz.exe`, 16,132,096 bytes, clang 23.1.3 + lld + ninja |
-| Launch | boots, finds the game, opens its window, runs guest code; no crash, no trap in 25 s |
+| Launch | boots, finds the game, opens its window, plays the intro movies and renders past them at 60 fps |
+
+## Getting it to draw
+
+Three defects stood between "links and boots" and "picture on screen". Each was found from observed
+runtime state, not guesswork.
+
+1. **Deadlock before the first frame.** The engine thread posted command 5 to the game's Renderer
+   worker and waited forever on a semaphore (`Renderer+0x80`) that only a GPU push-buffer callback
+   releases. The callback is installed by the XDK's `D3DDevice_InsertCallback` (guest `0x24E320`),
+   which the SDK neither replaces nor signatures, so its token went into a scratch buffer and was
+   dropped. `src/game/hooks.cpp` now replaces that function and runs the callback immediately: the
+   host renderer has no GPU timeline for the guest to be behind.
+2. **Access violation in XDK tile code.** `sub_0025295F` faulted reading `*this + 0x3214` with
+   `*this` NULL - the NV2A tile/miniport registers, reached from `D3DDevice_SetTile`, which
+   `xbe_symbols` had left at `0`. The function is at `0x24BC90`: 0xD1 bytes with 0x1EE and 0xC2 byte
+   callees, exactly the call cluster `sdk/xdk/5849/signatures.toml` records for `D3DDevice_SetTile`.
+   Naming it in `config/game.toml` hands it to the SDK's no-op replacement.
+3. **Black screen with correct frames.** A frame capture showed the guest render target 93% non-black
+   while the window measured 0.0% lit, and logging the ramp showed the title setting an all-zero
+   gamma ramp when the first movie starts and never restoring it. On the console the video plays
+   through the YUV overlay and the framebuffer is deliberately blanked; this renderer has no overlay
+   and draws the video into the framebuffer, so the blackout hid it. The SDK fork now treats an
+   all-black ramp as identity and applies pending ramps from either device slot.
+
+Evidence after the fixes: 60.0 fps steady, 1 draw per frame plus a ~0.55 MB texture upload while a
+movie plays, then 10-15 draws per frame with no video uploads once the movies end, window client area
+85-94% lit (`out/shot.ps1` measures the client rect and verifies the window is foreground).
+
+The SDK is a submodule pinned to `abilliontokens/XboxXBERecomp`, branch `urbz-port-fixes`, which
+carries fixes 3's two runtime changes. Clone with `--recurse-submodules`.
 
 ## Build transcript (abridged)
 

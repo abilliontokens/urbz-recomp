@@ -1,6 +1,6 @@
 # Kernel import coverage
 
-`default.xbe` imports 124 xboxkrnl ordinals. The SDK runtime registers 265 exports; 123 of this game's imports are covered, 1 are not.
+`default.xbe` imports 124 xboxkrnl ordinals. The SDK runtime registers 269 exports; 124 of this game's imports are covered, 0 are not.
 
 An uncovered import logs `boot: kernel import <n> (<name>) has no implementation` at boot
 and traps the first time the game calls it.
@@ -11,7 +11,7 @@ and traps the first time the game calls it.
 | 2 | `AvSendTVEncoderOption` | `export` AvSendTVEncoderOption |
 | 3 | `AvSetDisplayMode` | `export` AvSetDisplayMode |
 | 4 | `AvSetSavedDataAddress` | `export` AvSetSavedDataAddress |
-| 8 | `DbgPrint` | not implemented |
+| 8 | `DbgPrint` | `export` DbgPrint |
 | 15 | `ExAllocatePoolWithTag` | `export` ExAllocatePoolWithTag |
 | 16 | `ExEventObjectType` | `data` ExEventObjectType |
 | 17 | `ExFreePool` | `export` ExFreePool |

@@ -2,7 +2,8 @@
 """Cross-check the XBE's kernel imports against the exports the SDK runtime registers.
 
 The runtime binds kernel imports by ordinal: `KERNEL_EXPORT(ord, name, args)`,
-`KERNEL_FASTCALL(ord, name)` and `KERNEL_DATA(ord, name, size)` fill a 400-slot
+`KERNEL_FASTCALL(ord, name)` and `KERNEL_DATA(ord, name, size)`, or direct
+`RegisterExport(ord, "Name", fn)` / `RegisterData(ord, "Name", size)` calls, fill a 400-slot
 table (`sdk/runtime/cpu/dispatch.cpp`), and an import with no entry logs
 "kernel import <n> (<name>) has no implementation" at boot and traps if called.
 This reports exactly which of *this* game's imports are covered.
@@ -25,6 +26,11 @@ from xbe_info import Xbe, XbeError, load_ordinal_names  # noqa: E402
 REGISTRATION = re.compile(
     r"\bKERNEL_(EXPORT|FASTCALL|DATA)\s*\(\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)"
 )
+# Direct calls such as `kernel::RegisterExport(8, "DbgPrint", DbgPrintEntry)`. The numeric
+# ordinal and quoted name exclude the `RegisterExport(ord, #name, ...)` macro bodies.
+DIRECT_REGISTRATION = re.compile(
+    r"\bRegister(Export|Data)\s*\(\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*\"([^\"\\]+)\""
+)
 
 
 def sdk_exports(sdk_dir: str) -> dict[int, tuple[str, str]]:
@@ -42,6 +48,8 @@ def sdk_exports(sdk_dir: str) -> dict[int, tuple[str, str]]:
             if symbol in ("ord", "name"):  # the macro definitions themselves
                 continue
             found[int(ordinal, 0)] = (kind.lower(), symbol)
+        for kind, ordinal, symbol in DIRECT_REGISTRATION.findall(text):
+            found.setdefault(int(ordinal, 0), (kind.lower(), symbol))
     return found
 
 

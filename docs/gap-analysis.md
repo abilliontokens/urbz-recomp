@@ -15,13 +15,12 @@ Nothing is silently stubbed.
 ```
 python tools/kernel_coverage.py assets/default.xbe --markdown docs/kernel-coverage.md
 default.xbe: 124 kernel imports
-  implemented by the SDK runtime: 123
-  not implemented (traps if called): 1
-       8  DbgPrint
-  SDK registers 265 exports in total
+  implemented by the SDK runtime: 124
+  not implemented (traps if called): 0
+  SDK registers 269 exports in total
 ```
 
-**The only kernel gap is `DbgPrint` (ordinal 8).** Per-ordinal detail is in `docs/kernel-coverage.md`.
+**Every kernel import is now covered: all 124 are implemented by the SDK runtime, with no kernel gap.** Per-ordinal detail is in `docs/kernel-coverage.md`.
 
 ## XDK libraries
 
@@ -93,10 +92,13 @@ This is the largest gap. The disc ships 19 `movies/*.xmv` files and the XBE has 
 
 ## Priority order for bring-up
 
-1. Prove the first presented frame (`XBE_D3D12_DEBUG`, `XBE_CAPTURE_DIR`, `[xbe] trace` on the boot path).
+1. Prove the first presented frame. A black window is not evidence: every present clears the back
+   buffer to black (`sdk/runtime/gpu/d3d12.cpp:2754-2755`) and the window class brush is black
+   (`sdk/runtime/app/main.cpp:243`), and nothing is logged at present time at any level. Use a build
+   without `NDEBUG` (`sdk/runtime/core/log.h:18-22` gates every LOGI/LOGW on it) plus `XBE_PERF`,
+   whose `perf:` lines only start once presents happen.
 2. Resolve the D3D8 misses above - draw-state functions are on every frame's path.
 3. Resolve the `crt_*` math symbols, which otherwise silently change float results.
-4. Implement `DbgPrint` (ordinal 8) if the game calls it; it is the only kernel gap.
-5. Audio: watch for `dsound: exports running their original code:` and
+4. Audio: watch for `dsound: exports running their original code:` and
    `dsound: format tag %X not supported`, then fill the DirectSound misses.
-6. XMV video last, as a dedicated piece of work.
+5. XMV video last, as a dedicated piece of work.

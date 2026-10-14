@@ -9,11 +9,14 @@
 
 namespace {
 
-// Opt-in self-test (URBZ_AUTOSTART): ~2 s after the first poll, hold Xbox Start
-// (wButtons bit 4, 0x0010) for 500 ms on port 0, then release; repeat the pulse
-// every 3 s. The intro/attract movies run for minutes and ignore an early press,
-// so a single 2 s pulse can never reach the title screen; repeating pulses mean
-// one lands whenever the game becomes responsive. Unset: no-op, pad untouched.
+// Opt-in self-test (URBZ_AUTOSTART): a scripted pad on port 0, repeating a 10 s
+// cycle from ~2 s after the first poll: Start (wButtons 0x0010) held 0-0.5 s,
+// D-pad Up (wButtons 0x0001) held 3-3.5 s, then A (analog[0] = 0xFF, the Xbox
+// pressure byte, not a wButtons bit) held 5-5.5 s, all released between. The
+// intro/attract movies run for minutes and ignore early presses, so the cycle
+// repeats: a Start lands whenever the title is responsive and an A whenever a
+// menu is. Only ever ORs bits/bytes in,
+// never clears a real press. Unset: no-op, pad untouched.
 void AutostartPad(int port, input::Pad& pad) {
     static const bool enabled = [] {
         const char* v = std::getenv("URBZ_AUTOSTART");
@@ -22,23 +25,39 @@ void AutostartPad(int port, input::Pad& pad) {
     if (!enabled || port != 0) return;
     using namespace std::chrono;
     static std::atomic<int64_t> first_ms{0};
-    static std::atomic<bool> pressed{false};
+    static std::atomic<bool> start_down{false}, a_down{false}, up_down{false};
     const int64_t now = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
     int64_t expected = 0;
     if (first_ms.compare_exchange_strong(expected, now)) {
-        LOGI("urbz autostart: enabled, first poll on port 0; Start in ~2 s");
+        LOGI("urbz autostart: enabled, first poll on port 0; scripted Start/A cycle from ~2 s");
         return;
     }
     const int64_t elapsed = now - first_ms.load(std::memory_order_relaxed);
-    const bool down = elapsed >= 2000 && (elapsed - 2000) % 3000 < 500;
-    if (down) {
+    const int64_t phase = elapsed >= 2000 ? (elapsed - 2000) % 10000 : -1;
+    const bool start = phase >= 0 && phase < 500;
+    const bool up = phase >= 3000 && phase < 3500;
+    const bool a = phase >= 5000 && phase < 5500;
+    if (start) {
         pad.connected = true;
         pad.buttons = uint16_t(pad.buttons | 0x0010);  // Xbox Start
-        if (!pressed.exchange(true)) LOGI("urbz autostart: synthetic Start pressed (port 0, wButtons=0x%04X)", pad.buttons);
-    } else if (pressed.exchange(false)) {
-        // Only ever OR Start in: never clear it, so a real press on the same
-        // pad is not suppressed on non-press frames.
+        if (!start_down.exchange(true))
+            LOGI("urbz autostart: synthetic Start pressed (port 0, wButtons=0x%04X)", pad.buttons);
+    } else if (start_down.exchange(false)) {
         LOGI("urbz autostart: synthetic Start released (port 0)");
+    }
+    if (up) {
+        pad.connected = true;
+        pad.buttons = uint16_t(pad.buttons | 0x0001);  // Xbox D-pad Up (e.g. No -> Yes)
+        if (!up_down.exchange(true)) LOGI("urbz autostart: synthetic DPadUp pressed (port 0, wButtons=0x%04X)", pad.buttons);
+    } else if (up_down.exchange(false)) {
+        LOGI("urbz autostart: synthetic DPadUp released (port 0)");
+    }
+    if (a) {
+        pad.connected = true;
+        if (pad.analog[0] < 0xFF) pad.analog[0] = 0xFF;  // Xbox A, pressure byte
+        if (!a_down.exchange(true)) LOGI("urbz autostart: synthetic A pressed (port 0, analog[0]=0xFF)");
+    } else if (a_down.exchange(false)) {
+        LOGI("urbz autostart: synthetic A released (port 0)");
     }
 }
 }  // namespace

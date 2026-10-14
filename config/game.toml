@@ -189,6 +189,7 @@ IDirectSoundBuffer_GetCurrentPosition                = 0
 IDirectSoundBuffer_GetStatus                         = 0x27FCA1
 IDirectSoundBuffer_Lock                              = 0
 IDirectSoundBuffer_Play                              = 0x27FC05
+IDirectSoundBuffer_PlayEx                            = 0x27FC29
 IDirectSoundBuffer_Release                           = 0x27ED40
 IDirectSoundBuffer_SetAllParameters                  = 0
 IDirectSoundBuffer_SetBufferData                     = 0x280869

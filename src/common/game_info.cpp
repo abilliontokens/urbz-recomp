@@ -35,9 +35,10 @@ void AutostartPad(int port, input::Pad& pad) {
         pad.connected = true;
         pad.buttons = uint16_t(pad.buttons | 0x0010);  // Xbox Start
         if (!pressed.exchange(true)) LOGI("urbz autostart: synthetic Start pressed (port 0, wButtons=0x%04X)", pad.buttons);
-    } else {
-        pad.buttons = uint16_t(pad.buttons & ~0x0010);
-        if (pressed.exchange(false)) LOGI("urbz autostart: synthetic Start released (port 0)");
+    } else if (pressed.exchange(false)) {
+        // Only ever OR Start in: never clear it, so a real press on the same
+        // pad is not suppressed on non-press frames.
+        LOGI("urbz autostart: synthetic Start released (port 0)");
     }
 }
 }  // namespace

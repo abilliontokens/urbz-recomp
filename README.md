@@ -16,8 +16,10 @@ host-side glue only. You must supply your own legally acquired copy of the disc.
 | XDK build matched against the SDK's signature set | done - XDK 5849, supported by `sdk/xdk/5849` |
 | Toolchain (clang 23.1.3 + ninja + cmake) | done - see `docs/toolchain.md` |
 | Repo scaffolded from the SDK template | done |
-| `config/game.toml` written by `xbe_symbols` | see `docs/status.md` |
-| Recompilation and native build | see `docs/status.md` |
+| `config/game.toml` written by `xbe_symbols` | done - 130 of 238 XDK functions located |
+| Recompilation and native build | done - 15,942 functions, `Urbz.exe` boots and opens its window, see `docs/status.md` |
+| Kernel import coverage (`tools/kernel_coverage.py`) | 123 of 124 covered, see `docs/kernel-coverage.md` |
+| Remaining console-surface gaps | see `docs/gap-analysis.md` |
 
 ## The game
 

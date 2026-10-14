@@ -99,6 +99,14 @@ D3DDevice_SetGammaRamp                               = 0x24ABB0
 D3DDevice_SetIndices                                 = 0
 D3DDevice_SetLight                                   = 0
 D3DDevice_SetMaterial                                = 0
+# 0x24BB90 is SetPalette, not SwitchTexture: it is stdcall(stage, header), stores the
+# header at CDevice+0xF98+stage*4 (CDevice_Palettes in sdk/xdk/5849/layout.toml, whose
+# comment names SetPalette as the storer), refcounts it, and pushes (stage<<6)+0x41B20
+# with the header's data address - the console uploads palettes through the texture
+# unit's method space (0x1B20+64*stage), which is what suggests SwitchTexture. The
+# SDK's SwitchTexture host is fastcall(method, data, format) and rewrites the bound
+# texture header; this function takes no method or format. Callers (e.g. 0x1E80FE)
+# invoke it only for format-0x0B (P8) textures, passing texture+0x58 (embedded palette).
 D3DDevice_SetPalette                                 = 0x24BB90
 D3DDevice_SetPixelShader                             = 0x24D550
 D3DDevice_SetPixelShaderConstant                     = 0x24D750
@@ -189,6 +197,7 @@ IDirectSoundBuffer_GetCurrentPosition                = 0
 IDirectSoundBuffer_GetStatus                         = 0x27FCA1
 IDirectSoundBuffer_Lock                              = 0
 IDirectSoundBuffer_Play                              = 0x27FC05
+IDirectSoundBuffer_Pause                             = 0x27FC65
 IDirectSoundBuffer_PlayEx                            = 0x27FC29
 IDirectSoundBuffer_Release                           = 0x27ED40
 IDirectSoundBuffer_SetAllParameters                  = 0

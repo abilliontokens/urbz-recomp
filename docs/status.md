@@ -14,6 +14,7 @@ repository root.
 | Recompilation | 15,942 functions, 910,100 instructions, 64 partitions |
 | Native build | `out/build/release/Urbz.exe`, 16,132,096 bytes, clang 23.1.3 + lld + ninja |
 | Launch | boots, finds the game, opens its window, plays the intro movies and renders past them at 60 fps |
+| Gameplay | reaches free-roam city gameplay: Create-an-Urb, name entry, city load, rooftop district, dialogue, Power Social (see "Into the city") |
 
 ## Getting it to draw
 
@@ -43,7 +44,69 @@ movie plays, then 10-15 draws per frame with no video uploads once the movies en
 85-94% lit (`out/shot.ps1` measures the client rect and verifies the window is foreground).
 
 The SDK is a submodule pinned to `abilliontokens/XboxXBERecomp`, branch `urbz-port-fixes`, which
-carries fixes 3's two runtime changes. Clone with `--recurse-submodules`.
+carries the runtime fixes described here. Clone with `--recurse-submodules`.
+
+
+## Input, sound and the menu screens
+
+Getting from the title to a playable menu took four more fixes, each found the same way.
+
+1. **No controller input.** The game reads the pad through `XInputGetState`; a scripted pad hook in
+   `src/common/game_info.cpp` (`URBZ_AUTOSTART`, later `URBZ_STEP`) injects presses on port 0. It only
+   ever ORs bits in. The `URBZ_STEP` form reads a token from a file (`START`, `A`, `UP`, `RIGHTx9`,
+   `LSDOWN`, ...) and emits an exact burst of timed pulses on the game's own poll clock, so a driver
+   can do press -> screenshot -> decide -> press deterministically.
+2. **`IDirectSoundBuffer_PlayEx` was a trapping stub.** It is wired in `config/game.toml`
+   (`0x27FC29`, xtlid `0xB005A`) to a host implementation in `sdk/runtime/xdk/dsound.cpp` that shares
+   `Play`'s flag handling; the scheduled-start time is not reproduced.
+3. **Black scene after the title, then sliced logo and missing menu text.** The engine writes its own
+   push-buffer packets for vertex-shader constants (`0x41EA4`); the SDK's push walker skipped them, so
+   the projection constants stayed zero, and the walker only drained the ring at a few points, so
+   draws snapshotted the previous drain's matrices. The SDK now parses those packets into its
+   constant store and drains the ring at the top of every draw entry point, and
+   `D3DDevice_SetVertexShaderConstant1Fast` (`0x24CF30`) is wired with a count-aware host loop.
+4. **Monochrome textures.** P8 textures decoded without their palettes. `0x24BB90` is wired as
+   `D3DDevice_SetPalette` (evidence and the naming caveat are recorded at the entry in
+   `config/game.toml`): the guest function is stdcall `(stage, header)`, stores the header at
+   `CDevice+0xF98+stage*4` and refcounts it - exactly the SDK host `SetPalette`'s shape - while the
+   SDK's `SwitchTexture` host is fastcall `(method, data, format)` and rewrites the bound texture
+   header. The `0x1B20 + 64*stage` push inside the guest function, which suggested `SwitchTexture`,
+   is how the console uploads a palette through the texture unit's method space. Callers invoke it
+   only for format-`0x0B` (P8) textures, passing `texture+0x58`, the embedded palette header; with it
+   wired, the Maxis logo and menus render in full colour.
+
+Evidence: `out/menu_fix.png` shows the load/new-game dialog in colour with readable text;
+`out/step3_after_title_start.png` shows the main menu (1 Player / 2 Player / Credits).
+
+## Into the city
+
+Driving the menus deterministically with the step hook reached actual gameplay. Advancing out of
+Create-an-Urb crashed once, and the crash named the next missing symbol: guest return addresses
+`0x27FC7E` and `0x27F302` map to xtlid `0xB0057` at `0x27FC65`, a two-argument buffer call whose
+original code forwards a mode to the buffer's inner object (`[this+0x20]`). Host buffer objects
+have no such inner object, so the guest code faulted reading guest address `0x12`. The mode values
+(0 resume, 1 pause, 2 pause-until-`SynchPlayback`) match `CDirectSoundStream_Pause`'s semantics
+exactly, so `0x27FC65` is wired as `IDirectSoundBuffer_Pause` in `config/game.toml` (signature stub
+`{xtlid = 0xB0057}` in `sdk/xdk/5849/signatures.toml`) with a host body next to `StopEx` in
+`dsound.cpp`. After the fix the same press reaches the Hair screen, both name entries accept the
+default names, and "Are you ready to enter the City with this Urb?" loads the city.
+
+Evidence, run of 2026-10-14 with `XBE_PERF=1` (`out/run_perf.log`): `out/gameplay_city2.png`
+(`isGame=True`) shows the created Urb standing in the city during the intro camera, and
+`out/gameplay_rooftop.png` shows free-roam on the starting rooftop - player Urb, NPCs (Will, Darius),
+district geometry, the Power Social prompt - after which the social played out and Darius's
+reputation dialogue ran. Perf lines around those frames: 576-984 draws per frame (33k-57k verts,
+3.9-6.7 MB upload) at ~61 fps, no exception lines in either run's log, and the boot-time dsound
+audit no longer lists `0xB0057`. What is proven: movies, title, menus, save/new-game dialog,
+Create-an-Urb (gender/body/skin, face/hair pages, both name keyboards), city load, free-roam
+rendering, walking, dialogue and one Power Social. Not yet exercised: saving to a device and
+reloading, districts beyond the starting rooftop, jobs/minigames beyond the intro social.
+
+Still running their original guest code (boot-time audit, not yet hit in play): xtlid `0xB00A3`,
+`0xB00A5`, `0xB00A4` (small stubs beside the `IDirectSound_Release`/`IDirectSoundBuffer_Release`
+entries at `0x27ED56`/`0x27EDA0`/`0x27EDA5`), `0xB0080` at `0x27FCCC` and `0xB00A9` at `0x27FD0D`.
+Like `Pause`, these operate on host sound objects if called, so they are the most likely next
+crash; `IDirectSoundBuffer_Lock` also remains `0` in `config/game.toml`.
 
 ## Build transcript (abridged)
 
@@ -75,9 +138,8 @@ instructions 910100
 ```
 
 Process sample 15 s after launch: 44 threads, 15.8 s CPU, 182 MB working set, main window title
-`The Urbz: Sims in the City`. At 25 s: 26.0 s CPU, same working set. No `CrashDumps/` directory was
-produced, and the runtime logged no trap - the recompiled code is executing and the host survived,
-but nothing has been seen on screen yet and no frame counters were logged.
+`The Urbz: Sims in the City`. (This section records the first boot; the sections above record the
+runs that followed, which present frames and reach gameplay.)
 
 ## Known gaps, in the order they will matter
 
@@ -86,9 +148,8 @@ but nothing has been seen on screen yet and no frame counters were logged.
    likely real misses that the game does use and that must be found by hand in Ghidra
    (`python sdk/tools/symbols/xbe2pe.py config/game.toml game.exe`):
    `D3DDevice_SetIndices`, `D3DDevice_SetLight`, `D3DDevice_LightEnable`, `D3DDevice_SetMaterial`,
-   `D3DDevice_SetPalette`, `D3DDevice_SetTile`, `D3DDevice_SwitchTexture`, `D3DDevice_BeginPush`,
-   `D3DDevice_EndPush`, `D3DDevice_FlushVertexCache`, `D3DDevice_GetVertexShaderFunction`,
-   `D3DDevice_SetVertexShaderConstant1Fast`, `D3DResource_BlockUntilNotBusy`,
+   `D3DDevice_BeginPush`, `D3DDevice_EndPush`, `D3DDevice_FlushVertexCache`,
+   `D3DDevice_GetVertexShaderFunction`, `D3DResource_BlockUntilNotBusy`,
    `IDirectSoundBuffer_Lock` / `_Unlock` / `_GetCurrentPosition` / `_SetCurrentPosition`,
    `DirectSoundCreateBuffer`, the `IDirectSound_Set*` 3D setters, the `CDirectSoundStream_Set*` setters,
    and the CRT math entries `crt_sin`, `crt_cos`, `crt_tan`, `crt_atan`, `crt_sqrt`, `crt_log`,
@@ -105,10 +166,13 @@ but nothing has been seen on screen yet and no frame counters were logged.
 
 ## Next actions
 
-1. Confirm whether the window ever presents a frame: run with `XBE_D3D12_DEBUG` and `XBE_CAPTURE_DIR`
-   set, and add `[xbe] trace` entries for the boot path to see where the guest stops.
-2. Resolve the D3D8 and DirectSound misses above in Ghidra and fill their addresses into
+1. Name the remaining original-code dsound exports (`0xB00A3`, `0xB00A5`, `0xB00A4`, `0xB0080`,
+   `0xB00A9`) and `IDirectSoundBuffer_Lock`, and wire host bodies for the ones play reaches, in the
+   manner of `IDirectSoundBuffer_Pause`.
+2. Play further: save to a device and reload, leave the starting rooftop for another district, and
+   run a job/minigame, fixing what surfaces.
+3. Resolve the remaining D3D8 and DirectSound misses above in Ghidra and fill their addresses into
    `[symbols]` in `config/game.toml`.
-3. Fill the `crt_*` math symbols so the game's float results match the Xbox.
-4. Re-run `build.bat` after every config change; `config/game.toml` already carries the title/entry
+4. Fill the `crt_*` math symbols so the game's float results match the Xbox.
+5. Re-run `build.bat` after every config change; `config/game.toml` already carries the title/entry
    guard, so a wrong image is rejected rather than silently recompiled.

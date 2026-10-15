@@ -1,0 +1,33 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "The Urbz: Sims in the City",
+  "wikidata": "Q2316781",
+  "system": "Xbox",
+  "type": "recomp",
+  "original": {
+    "region": "USA",
+    "serial": "0x45410060",
+    "sha1": "5712b6a3e2eaaacfcae228cf6154ade499a0033c"
+  },
+  "project": "The Urbz: Sims in the City Recompiled",
+  "status": "in-progress",
+  "targets": ["Windows"],
+  "toolchain": "XboxXBERecomp",
+  "approach": "Static recompilation of the retail XBE to C++; XDK HLE on a Direct3D 12 renderer and XAudio2",
+  "maintainers": [
+    { "name": "abilliontokens", "link": "https://github.com/abilliontokens" }
+  ],
+  "links": [
+    { "label": "Bring-up status", "url": "https://github.com/abilliontokens/urbz-recomp/blob/master/docs/status.md" },
+    { "label": "SDK fork", "url": "https://github.com/abilliontokens/XboxXBERecomp" }
+  ],
+  "help": [
+    "Naming the 108 unmatched XDK functions in config/game.toml (D3D8, DirectSound, crt math)",
+    "DirectSound exports still running guest code: Lock/Unlock, 0xB0080, 0xB00A3-0xB00A5, 0xB00A9",
+    "Play testing past the starting rooftop: other districts, jobs, minigames",
+    "Saving to a device and reloading",
+    "Host crt_sin/cos/tan/atan/sqrt/log so float results match the Xbox"
+  ],
+  "tags": ["xbox", "static-recomp", "xbe", "xdk-5849", "d3d12"],
+  "notes": "Boots from the retail USA XBE: 15,942 functions recompiled. Intro movies, title, menus, Create-an-Urb and the city load all run, and free-roam on the starting rooftop renders at ~60 fps (576-984 draws per frame) with walking, dialogue and socials. Fixed so far: a push-buffer render deadlock, vertex-shader constant packets, P8 palettes, the all-black gamma ramp, DirectSound PlayEx and Pause. Not yet exercised: saving to a device and reloading, districts past the starting rooftop, jobs and minigames. 108 of 238 XDK functions are still unmatched and trap if the game calls them."
+}

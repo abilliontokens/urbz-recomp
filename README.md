@@ -7,6 +7,26 @@ produced by statically recompiling the game's x86 XBE with the
 This repository contains **no game code and no game assets**. It holds tooling, configuration and
 host-side glue only. You must supply your own legally acquired copy of the disc.
 
+## Run it on Windows
+
+You supply the game: the USA Xbox release, as a disc image or as the files from one.
+
+1. Download `Urbz.zip` from [Releases](https://github.com/abilliontokens/urbz-recomp/releases/latest)
+   and unzip it anywhere.
+2. Put your disc image in the `assets` folder beside `Urbz.exe`, so you have
+   `Urbz.exe` and `assets\<anything>.iso`. A whole-disc dump or a plain xiso both work, and so do
+   extracted files (`default.xbe` with its `DATA` and `movies` folders beside it).
+3. Run `Urbz.exe`. It mounts the image as the console's `D:` and boots the game.
+
+You need Windows 10/11 x64, a Direct3D 12 GPU, and an Xbox-style controller - the game only reads a
+pad, there is no keyboard mapping. The first run writes `settings.toml`, `logs\` and `hdd\` (where
+saves go) beside the exe. In game, **F1** opens settings (display mode, resolution, aspect ratio,
+ultrawide, vsync, frame cap, render scale, anisotropic filtering) and **F2** the frame-time graph.
+
+If it says the game is missing, the `assets` folder has no image or extracted `default.xbe` in it.
+The exe only runs the XBE it was recompiled from - SHA-1 `5712b6a3...`, USA retail; any other build
+is offered as a warning you have to confirm, and will not run properly if you take it.
+
 ## Status
 
 | Stage | State |
@@ -47,7 +67,7 @@ tools/         xiso_extract.py (XDVDFS reader), xbe_info.py (XBE reader), env.ba
 generated/     recompiler output (never committed)
 ```
 
-## Setup
+## Build it from source
 
 1. Put your disc image in the repository root, or `default.xbe` plus its `DATA` and `movies`
    folders in `assets/`.

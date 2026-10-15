@@ -176,3 +176,27 @@ runs that followed, which present frames and reach gameplay.)
 4. Fill the `crt_*` math symbols so the game's float results match the Xbox.
 5. Re-run `build.bat` after every config change; `config/game.toml` already carries the title/entry
    guard, so a wrong image is rejected rather than silently recompiled.
+
+## Settings overlay, ultrawide and the first release
+
+Recorded 2026-10-15.
+
+- `src/common/overlay.cpp` is wired into `app::GameInfo::ui`: **F1** a settings panel (display mode,
+  resolution, aspect ratio, ultrawide, vsync, frame cap, render scale, anisotropic filtering), applied
+  live and written to `settings.toml`, and **F2** a frame-time graph fed by the SDK's new timers
+  (`g_perf_sendstate_ns`, `g_perf_hle_ns`, plus the per-stage draw breakdown). Both start closed, and
+  the overlay only owns the mouse while the settings panel is up.
+- The SDK fork gained `aspect_ratio` (`auto`, `4:3`, `16:9`, `16:10`, `21:9`, `32:9`) and `ultrawide`.
+  The widening moves the viewport offset, never its scale, so a display wider than 16:9 shows more
+  world at the sides at an unchanged vertical field of view (Hor+, no stretch); only the main frame
+  target grows, so off-screen passes keep their own size and centre.
+- `tools/upscale_movies.py` upscales the disc's `.xmv` movies 6x into `assets/movies_4k` with
+  realesrgan-ncnn-vulkan. It is offline tooling only: no runtime path reads those files yet.
+
+Release check, the shape a player gets: a folder holding nothing but `Urbz.exe` and
+`assets\Urbz, The - Sims in the City (USA).iso` (no extracted files). The log records
+`Game: default.xbe in ...(USA).iso, sha1 5712b6a3...`, `files: D: is ...(USA).iso` and
+`D3D12 adapter: NVIDIA GeForce RTX 5060 Ti`; 45 s in, the borderless client area measured
+3840x2160 with 92.0% of sampled pixels lit, showing the district select screen in colour with clean
+text. `release.bat` packs that exe with an empty `assets` folder, `README.md` and the SDK's
+`THIRD_PARTY.txt` into `Urbz.zip` (5.6 MiB).

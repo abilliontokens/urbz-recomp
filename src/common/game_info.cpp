@@ -4,6 +4,7 @@
 #include <cstring>
 
  #include "app/app.h"
+#include "common/overlay.h"
 #include "core/input.h"
 #include "core/log.h"
 #include <cstdio>
@@ -152,7 +153,7 @@ const app::GameInfo app::kGame = {
     .loaded = nullptr,                       // image in memory, before its entry point runs
     .window = nullptr,                       // the game window is up
     .message = nullptr,                      // window messages first; true takes one
-    .ui = nullptr,                           // ImGui drawing each frame
+    .ui = &overlay::Draw,                    // ImGui drawing each frame: F1 settings, F2 performance
     .pad = &AutostartPad,                    // changes a polled pad (URBZ_AUTOSTART self-test)
     .rumble = nullptr,                       // changes a rumble before it is set
 };

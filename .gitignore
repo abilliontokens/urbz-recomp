@@ -10,9 +10,14 @@
 # recompiled code, derived from the game
 /generated/
 
-# user's own game files: the disc image and everything extracted from it
+# user's own game files: the disc image and everything extracted from it, plus the
+# 4k movie assets regenerated from them by tools/upscale_movies.py
 /assets/
+/assets/movies_4k/
 *.iso
+
+# downloaded media tools; tools/upscale_movies.py itself stays tracked
+/tools/bin/
 
 # locally installed build toolchain
 /.toolchain/

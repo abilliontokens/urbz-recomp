@@ -228,12 +228,36 @@ Rules it keeps:
   (capped at 450 ms) on a steady clock rather than for a number of polls, which the 250 ms port
   poller would otherwise consume.
 
-The layout is in `README.md`: WASD the left stick (walk), arrows the D-pad (menus - the D-pad is the
-navigation input the scripted self-test already proved), right-button drag plus Q/E/R/F the right
-stick (the camera: on console Urbz the camera is the right stick), wheel the zoom pulse, space A,
-escape/backspace B, enter Start, tab Back.
+The layout is in `README.md`: WASD the left stick (walk), arrows the D-pad (menus), right-button
+drag plus Q/E/R/F the right stick (the camera), wheel the zoom pulse, space A, escape/backspace B,
+enter Start, tab Back.
 
-Not proven: this has only been built and read, not played. Which pad input the game's zoom uses is
-not settled from the image - the wheel drives the right stick's Y axis, which is the camera's
-dolly/tilt axis; if play shows zoom lives on the triggers instead, `WM_MOUSEWHEEL` only has to set
-`analog[6]`/`analog[7]` in `Apply` instead of `ry`.
+The bindings were chosen from the image, not from habit:
+
+- **The camera is the right stick, read as an analog value, and nothing else.** Camera update
+  `sub_0001F4A0` calls the rotate handler `sub_0001F970`, which scales the history float at +0x30
+  (sThumbRX) by `[pad+0x19C]` and adds it to the yaw at `cam+0x454`, negated when
+  `OPT_invert_cam_rot` is set, and the zoom handler `sub_0001FC20`, which takes the float at +0x34
+  (sThumbRY) and applies `cam+0x450 -= 1.3 * RY` clamped, then drives pitch `cam+0x458` and the
+  field of view off that same distance (the "MAX FOV"/"MIN FOV"/"Camera Pos" debug printer
+  `sub_00022540` prints the lerp). So stick up zooms in, there is no separate tilt control, and the
+  triggers, black/white and the stick clicks move no camera at all - which is why the wheel drives
+  the Y axis rather than a trigger byte. Deflection under ~24% of full is inside the game's own
+  deadzone, and the digital right-stick bits only feed the "a UI panel has claimed the camera"
+  tests (action 15 = all four right-stick bits).
+- **Menu navigation reads the D-pad and the left stick as one action.** Input is table-driven: 58
+  rows of `{action, button mask}` at guest `0x2E0FB8` (count at `0x2E1188`), installed by
+  `sub_000118B0` through `sub_001920E0`, queried per action by `sub_0001CAA0` (pressed),
+  `sub_0001CA30` (held) and `sub_0012E840` (repeat). Rows 21-28 give the four navigation actions
+  both families - action 1 = `0x1000 | 0x10000`, 2 = `0x4000 | 0x40000`, 3 = `0x8000 | 0x80000`,
+  4 = `0x2000 | 0x20000` - which is why WASD navigates most screens and the arrows, on the D-pad,
+  navigate the rest.
+- This corrects `docs/input-and-draw-path.md`: `sub_001D0340`/`sub_001D03F0`/`sub_001D0490` are not
+  masked history queries. They reset the history, roll it forward and copy history 1 into history 2
+  (sticks included); their callers pass a 0/1 flag, never a mask.
+
+Not proven: this has only been built and read, not played. The translation itself was exercised
+off-line - a throwaway harness drove `kbm::Message` with synthetic `WM_KEYDOWN`/`WM_MOUSEWHEEL`/
+`WM_RBUTTONDOWN` messages and checked `kbm::Apply`'s report (18 checks: focus gating, panel gating,
+the circle clamp on diagonals, the 90 ms wheel pulse and its expiry, drag deflection, OR-only
+merging with a controller's own report, alt-tab releasing held keys, port 1 untouched).

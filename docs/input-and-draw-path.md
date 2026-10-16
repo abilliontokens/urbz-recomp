@@ -46,7 +46,7 @@ XINPUT_STATE at **padobj+520 (0x208)**: packet number +0x208, `wButtons` at **+0
 
 Per-pad history object (120 bytes, allocated in `sub_0018D4B0`, pointer at **padobj+508 (0x1FC)**):
 
-| offset | meaning (from `sub_001D0340/0x1D03F0/0x1D0490`) |
+| offset | meaning (from the pad update and the edge scanner below) |
 |---|---|
 | +0x00 | current button word (game encoding) |
 | +0x04 | previous frame button word |
@@ -68,6 +68,43 @@ hist[0x08] |= hist[0x00]; hist[0x10] |= ~hist[0x00]; ...
 Auto-repeat: `sub_0018D6D0` (`0x18D6D0`) counts down per-button timers at
 padobj+440..471 (delay byte padobj+472 = 10, rate padobj+473 = 3, set in the ctor
 `sub_0018D4B0`) and ORs held bits into padobj+436 ("repeat fire" word).
+
+**Correction (2026-10-16).** `sub_001D0340`/`sub_001D03F0`/`sub_001D0490` are not masked queries of
+this object: they reset the history, roll it forward, and copy history 1 into history 2 (stick
+floats included, +0x30 → +0x30 and +0x34 → +0x34), and their callers pass a 0/1 flag, never a mask.
+The masks live in data, in the binding table below.
+
+### 1.2a Action bindings (what consumers actually ask for)
+
+No consumer tests a raw button constant; every one asks for an *action*, and the action-to-mask
+table is data at guest **`0x2E0FB8`** - 58 rows of `{action id, button mask}` (count at `0x2E1188`),
+installed once from `sub_000118B0` (`0x119EF`) through `sub_001920E0`, which stores it at
+padobj+0x1A4/+0x1A8 and sorts it. Queries: `sub_0001CAA0` pressed, `sub_0001CA30` held,
+`sub_0012E840` auto-repeat (word at padobj+0x1B4), `sub_000110C0` pressed-and-consume,
+`sub_00172F50` released. A higher layer can claim buttons (`sub_0018DF10` ORs an action's rows into
+a claim, `sub_0018DF70` reads it back), which is how an open UI panel freezes the camera.
+
+Rows 21-28 (`0x2E1060..0x2E1098`) give the four navigation actions **both** the D-pad and the left
+stick: action 1 = `0x1000 | 0x10000`, 2 = `0x4000 | 0x40000`, 3 = `0x8000 | 0x80000`,
+4 = `0x2000 | 0x20000`. The UI router `sub_0001D630` (per pad, via `sub_0001D5D0` at `0x11E6E`)
+queries actions 1-4 pressed and held/repeat and posts the navigation events.
+
+### 1.2b The camera
+
+The camera class (vtable `0x2BD580`, ctor `sub_0001EE20`) never reads the digitised stick bits - it
+reads the deadzoned analog floats in the history block (+0x30 = RX, +0x34 = RY, stored by
+`sub_0018DCA0`). Update `sub_0001F4A0` calls:
+
+- **rotate `sub_0001F970`** - `[padobj+0x19C] * RX`, rate `v·|v|` × 70 (× 100 above 0.8) × frame
+  time, negated for `OPT_invert_cam_rot`, added to yaw `cam+0x454`;
+- **zoom `sub_0001FC20`** - `[padobj+0x1A0] * RY`, `cam+0x450 -= 1.3 * RY` clamped, with pitch
+  `cam+0x458` and the field of view both lerped off that distance (`sub_00022540` prints them as
+  `MAX FOV`/`MIN FOV`/`FOV`/`Camera Pos`). Stick up is zoom in, and there is no separate tilt.
+
+Both skip while mask `0xF00000` (action 15, the four right-stick bits) is claimed. The triggers
+(actions 34/35) change game speed, black/white (13/14) cycle the target, and no binding row holds
+`0x200`/`0x400`, so neither stick click touches the camera. This is why `src/common/input_kbm.cpp`
+puts the mouse wheel on the right stick's Y axis.
 
 ### 1.3 Raw → game button mapping
 
@@ -108,9 +145,9 @@ deadzone/scale pass. Trigger and face-button *depth* is discarded (byte != 0 tes
 - Consumers do not test `0x800` as an immediate anywhere in the generated code — the
   UI/game query the history words with masks that come from data (the UI is data-driven;
   e.g. the startscreen logic in `sub_000A8581` combines pad state into the flag word
-  `dword_35A7FC`, bits 0x2/0x8/0x10/0x20/0x80). **[INFERENCE]** menu code asks
-  "pressed-this-frame / held / repeated" per button through the history object rather
-  than through hard-coded constants, which is why no `test ..., 0x800` site exists.
+  `dword_35A7FC`, bits 0x2/0x8/0x10/0x20/0x80). That inference is now confirmed: the masks
+  are the binding table at `0x2E0FB8` (§1.2a), so menu code asks "pressed / held / repeated"
+  per *action*, which is why no `test ..., 0x800` site exists.
 
 ---
 

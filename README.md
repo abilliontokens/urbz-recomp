@@ -39,10 +39,10 @@ in, and the keyboard is always port 1.
 | --- | --- | --- |
 | `W` `A` `S` `D` | left stick | walk; menus that read the stick |
 | arrow keys | D-pad | menu and dialog navigation |
-| mouse, right button held | right stick | camera: rotate and tilt, deflected from where you pressed |
+| mouse, right button held | right stick | camera, deflected from where you pressed: rotate and zoom |
 | `Q` / `E` | right stick left/right | rotate the camera |
-| `R` / `F` | right stick up/down | tilt the camera |
-| mouse wheel | right stick up/down, in pulses | zoom the camera |
+| `R` / `F` | right stick up/down | zoom the camera in / out |
+| mouse wheel | right stick up/down, in pulses | zoom the camera in / out |
 | space | A | accept, interact |
 | escape, backspace | B | cancel, back |
 | `X` / `Y` | X / Y | |
@@ -52,7 +52,10 @@ in, and the keyboard is always port 1.
 | tab | Back | |
 | shift / ctrl, middle mouse | left / right stick click | |
 
-Camera rotation and zoom follow the game's own options screen (invert camera rotation, auto zoom).
+The camera is the right stick and nothing else: the game turns on its X axis and zooms on its Y,
+which is also what moves its height and field of view - there is no separate tilt. Rotation
+direction follows the game's own invert-camera-rotation option.
+
 Keys are read only while the game window has focus, and are dropped when it loses focus, so an
 alt-tabbed game does not walk on by itself. While the F1 settings panel is up it owns the keyboard
 and the mouse and the game sees neither.

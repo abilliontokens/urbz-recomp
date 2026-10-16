@@ -10,13 +10,13 @@
 //
 // Layout (the console input each binding drives):
 //
-//   W A S D                  left stick          walk; menus that take the stick
+//   W A S D                  left stick          walk; menus that read the stick
 //   arrow keys               D-pad               menu and dialog navigation
-//   mouse, right button held right stick         camera: rotate and tilt, as a stick deflected
-//                                                from where the button went down
-//   Q / E                    right stick X       camera rotate left / right
-//   R / F                    right stick Y       camera tilt-zoom up / down
-//   mouse wheel              right stick Y pulse camera zoom in / out
+//   mouse, right button held right stick         camera, as a stick deflected from where the
+//                                                button went down: rotate and zoom
+//   Q / E                    right stick X       rotate the camera left / right
+//   R / F                    right stick Y       zoom the camera in / out
+//   mouse wheel              right stick Y pulse zoom the camera in / out
 //   space                    A                   accept, interact
 //   escape, backspace        B                   cancel, back
 //   X / Y                    X / Y
@@ -26,8 +26,13 @@
 //   tab                      Back
 //   shift / ctrl, middle btn left / right stick click
 //
-// Camera rotation and zoom direction follow the game's own options (invert camera rotation, auto
-// zoom) - this layer only reports stick deflection.
+// The camera is the right stick and nothing else: the game's camera update reads the analog axes
+// (the deadzoned floats at +0x30/+0x34 of the pad's history block, fed from sThumbRX/sThumbRY),
+// rotating on X in `sub_0001F970` and, on Y, moving distance, field of view and pitch together in
+// `sub_0001FC20` (`distance -= 1.3 * RY`, so stick up is zoom in). The triggers, black/white and
+// the stick clicks move no camera at all, which is why the wheel drives the Y axis. Deflection
+// under ~24% of full is inside the game's own deadzone, and rotation direction follows its
+// invert-camera-rotation option.
 //
 // Keys are only read while the game window has focus, and are dropped when it loses focus, so an
 // alt-tabbed game does not keep walking. While the F1 settings panel is up the overlay owns the
@@ -178,7 +183,8 @@ void Apply(int port, input::Pad& pad) {
     const float lx = Axis('A', 'D'), ly = Axis('S', 'W');
     if (lx != 0.0f || ly != 0.0f) Deflect(lx, ly, pad.lx, pad.ly);
 
-    // right stick: the camera. Keys, the right-button drag and the wheel's zoom pulse add up
+    // right stick: the camera. X rotates, Y zooms; keys, the right-button drag and the wheel's
+    // zoom pulse add up before the circle clamp
     float rx = Axis('Q', 'E'), ry = Axis('F', 'R');
     if (g_rmb.load(std::memory_order_relaxed)) {
         rx += float(g_mouse_x.load(std::memory_order_relaxed) - g_anchor_x.load(std::memory_order_relaxed)) / kDragRadius;

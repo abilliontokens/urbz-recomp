@@ -24,6 +24,11 @@ run writes `settings.toml`, `logs\` and `hdd\` (where saves go) beside the exe. 
 settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, render scale,
 anisotropic filtering) and **F2** the frame-time graph.
 
+Any frame rate runs the game at its real speed, including uncapped on a high-refresh display. The
+engine quantised its frame step to whole 60ths of a second, which made it run 2.4x fast at 144 fps;
+the host replaces that quantiser with the time that really passed (`src/game/hooks.cpp`, measured at
+1.000 game seconds per real second at 60, 144 and unlimited).
+
 If it says the game is missing, the `assets` folder has no image or extracted `default.xbe` in it.
 The exe only runs the XBE it was recompiled from - SHA-1 `5712b6a3...`, USA retail; any other build
 is offered as a warning you have to confirm, and will not run properly if you take it.

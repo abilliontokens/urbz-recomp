@@ -368,6 +368,8 @@ void DrawDisplay() {
         }
         ImGui::EndCombo();
     }
+    Note("Any of these runs the game at its real speed: the frame step is the time that really "
+         "passed, not a 60th of a second per frame (src/game/hooks.cpp).");
 }
 
 void DrawQuality() {

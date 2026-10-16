@@ -261,3 +261,56 @@ off-line - a throwaway harness drove `kbm::Message` with synthetic `WM_KEYDOWN`/
 `WM_RBUTTONDOWN` messages and checked `kbm::Apply`'s report (18 checks: focus gating, panel gating,
 the circle clamp on diagonals, the 90 ms wheel pulse and its expiry, drag deflection, OR-only
 merging with a controller's own report, alt-tab releasing held keys, port 1 untouched).
+
+## Frame rate and game speed
+
+Recorded 2026-10-16. Reported defect: above 60 fps the whole game ran fast.
+
+Measured first: `app::Pace()` does hold the cap (logged `pace: 61 swaps/s, cap 60`, then
+`pace: 144 swaps/s, cap 144` when the cap was switched mid-run), so the host pacer was not at
+fault - the engine's own step was.
+
+**The engine measures real time and then throws the precision away.** The clock object at
+`[0x358914]` reads `rdtsc` through XAPI `QueryPerformanceCounter` over a fixed 733,333,333 Hz, so
+its elapsed seconds are real. The frame tick `sub_0018E480` then calls `sub_0018E360`, which does
+
+```
+ticks = clamp((int)(elapsed / [0x2F024C] + 0.5), 1, 15)      // 0x2F024C = 1/60 s
+dt    = ticks * [0x2F024C]                                   // 0x18E580, into [0x2E2A80]
+```
+
+`[0x2E2A80]` is the single delta the rest of the engine multiplies by - 97 reads in 63 functions -
+and with a 1/60 s tick and a floor of one tick, **every frame shorter than 25 ms still advanced the
+game by a whole 1/60 s**. At 144 fps that is 144 x 1/60 = 2.4 s of game time per real second,
+exactly the 2.4x that was seen.
+
+The fix (`src/game/hooks.cpp`) keeps the engine's measurement and replaces only the quantiser: a
+host `sub_0018E360` takes ticks of 1 ms and writes back a seconds-per-tick of `dt / ticks`, so
+`ticks * [0x2F024C]` is exactly the time that really passed, at any frame rate. The engine's own
+0.25 s ceiling (its 15 ticks of 1/60 s) is kept, so a stall still cannot advance the world in one
+jump. Changing the unit is safe because nothing else depends on it: the tick count `[0x2E2A7C]`
+has one other reader, `sub_001A7F80` at 0x1A7FAE, which forwards it only on the smoothing path the
+game never enables (clock+5 is cleared at 0x18E0E2 and 0x1B02EE) and whose field the render
+thread's `sub_001D44D0` discards; the running total `[0x358898]` is copied to `[0x3588BC]`, which
+nothing reads.
+
+Two subsystems stepped per *call* rather than per delta and are wrapped the same way:
+
+- **Camera zoom** `sub_0001FC20`: `distance(cam+0x450) -= rate * RY` with rate `[[cam+0x08]+0x54]`
+  = 1.3 and no frame-time factor, plus a 0.1-per-call out-of-bounds dolly at `[0x2E5DE8]`. The
+  host scales both by `dt * 60` for the duration of the call and restores them.
+- **Button auto-repeat** `sub_0018D6D0`: counts each held button's timer down by one per call,
+  reloading from the pad's delay byte +0x1D8 (10) and rate byte +0x1D9 (3), and the manager calls
+  it twice a frame - so menus scrolled 2.4x fast at 144 fps. The host rescales those two counts to
+  the call rate it measures itself (smoothed), which keeps the original logic running on every
+  call at console timing.
+
+Everything else was checked and is already delta-driven: animation channels and blend weights
+(`sub_001A31A0`, `sub_001A6770`), camera rotate/follow/recenter (`sub_0001F970`, `sub_0001EA30`,
+`sub_00021B10`), needs decay and the game clock. Movie playback is not frame-driven at all - the
+XMV decoder is paced by the D3D vertical-blank count (host thread, 16667 us) and corrected by the
+audio clock - and the Flash menus and title idle timer are wall-clock.
+
+Verified: `fps_cap` 60, 144 and unlimited, with a throwaway probe summing the engine's own dt
+against the wall clock - **1.000 game seconds per real second in all three**, at 60, 138 and 2474
+frames per second respectively, no exceptions. The probe was removed before shipping.

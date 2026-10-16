@@ -200,3 +200,40 @@ Release check, the shape a player gets: a folder holding nothing but `Urbz.exe` 
 3840x2160 with 92.0% of sampled pixels lit, showing the district select screen in colour with clean
 text. `release.bat` packs that exe with an empty `assets` folder, `README.md` and the SDK's
 `THIRD_PARTY.txt` into `Urbz.zip` (5.6 MiB).
+
+## Keyboard and mouse
+
+Recorded 2026-10-16.
+
+The guest has one input path and it is an Xbox pad (`XInputGetState`, section "Input path" of
+`docs/input-and-draw-path.md`), so `src/common/input_kbm.cpp` translates the keyboard and the mouse
+into a pad report on port 0 rather than inventing a second path. It hangs off the two hooks the SDK
+already provides: `app::GameInfo::message` (the window thread, after ImGui, never taking a message so
+F1/F2/F3 still work) collects key, mouse-button, mouse-move and wheel state into atomics, and
+`app::GameInfo::pad` (`PadHook` in `game_info.cpp`, after the `URBZ_AUTOSTART`/`URBZ_STEP` script
+pad) ORs that state into the polled `input::Pad`.
+
+Rules it keeps:
+
+- **Additive.** Buttons are ORed, an axis only moves if the keys push it further than a real stick
+  already did, so a controller and the keyboard work at once and neither cancels the other.
+- **Port 0 is always connected.** `xdk/xapi.cpp UpdatePorts()` derives `XPP_GamepadType.Current`
+  from `input::Poll(p).connected`; forcing port 0 means the game opens a pad at boot on a PC with no
+  controller plugged in.
+- **Focus-gated.** `WM_KILLFOCUS`/`WM_ACTIVATE(WA_INACTIVE)` drop every held key (alt-tab produces no
+  `WM_KEYUP`), and nothing reaches the game while the F1 settings panel is up
+  (`overlay::SettingsOpen()`, the render thread's panel flag published as an atomic).
+- **Round sticks.** A digital diagonal is normalised to the circle a real stick reaches instead of
+  1.41x a cardinal; the wheel is a notch, not a position, so each notch holds the zoom axis for 90 ms
+  (capped at 450 ms) on a steady clock rather than for a number of polls, which the 250 ms port
+  poller would otherwise consume.
+
+The layout is in `README.md`: WASD the left stick (walk), arrows the D-pad (menus - the D-pad is the
+navigation input the scripted self-test already proved), right-button drag plus Q/E/R/F the right
+stick (the camera: on console Urbz the camera is the right stick), wheel the zoom pulse, space A,
+escape/backspace B, enter Start, tab Back.
+
+Not proven: this has only been built and read, not played. Which pad input the game's zoom uses is
+not settled from the image - the wheel drives the right stick's Y axis, which is the camera's
+dolly/tilt axis; if play shows zoom lives on the triggers instead, `WM_MOUSEWHEEL` only has to set
+`analog[6]`/`analog[7]` in `Apply` instead of `ry`.

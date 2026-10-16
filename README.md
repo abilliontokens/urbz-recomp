@@ -18,14 +18,44 @@ You supply the game: the USA Xbox release, as a disc image or as the files from 
    extracted files (`default.xbe` with its `DATA` and `movies` folders beside it).
 3. Run `Urbz.exe`. It mounts the image as the console's `D:` and boots the game.
 
-You need Windows 10/11 x64, a Direct3D 12 GPU, and an Xbox-style controller - the game only reads a
-pad, there is no keyboard mapping. The first run writes `settings.toml`, `logs\` and `hdd\` (where
-saves go) beside the exe. In game, **F1** opens settings (display mode, resolution, aspect ratio,
-ultrawide, vsync, frame cap, render scale, anisotropic filtering) and **F2** the frame-time graph.
+You need Windows 10/11 x64 and a Direct3D 12 GPU. Play it with a controller (Xbox, PlayStation and
+Switch pads all work, through SDL) or with the keyboard and mouse - see **Controls** below. The first
+run writes `settings.toml`, `logs\` and `hdd\` (where saves go) beside the exe. In game, **F1** opens
+settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, render scale,
+anisotropic filtering) and **F2** the frame-time graph.
 
 If it says the game is missing, the `assets` folder has no image or extracted `default.xbe` in it.
 The exe only runs the XBE it was recompiled from - SHA-1 `5712b6a3...`, USA retail; any other build
 is offered as a warning you have to confirm, and will not run properly if you take it.
+
+## Controls
+
+The game itself only ever reads an Xbox pad, so keyboard and mouse are translated into one on port 0
+(`src/common/input_kbm.cpp`). A controller and the keyboard can be used at the same time; neither
+takes input away from the other. Up to four controllers are picked up in the order they are plugged
+in, and the keyboard is always port 1.
+
+| Keyboard / mouse | Pad | In game |
+| --- | --- | --- |
+| `W` `A` `S` `D` | left stick | walk; menus that read the stick |
+| arrow keys | D-pad | menu and dialog navigation |
+| mouse, right button held | right stick | camera: rotate and tilt, deflected from where you pressed |
+| `Q` / `E` | right stick left/right | rotate the camera |
+| `R` / `F` | right stick up/down | tilt the camera |
+| mouse wheel | right stick up/down, in pulses | zoom the camera |
+| space | A | accept, interact |
+| escape, backspace | B | cancel, back |
+| `X` / `Y` | X / Y | |
+| `Z` / `C` | left / right trigger | |
+| `1` / `2` | black / white | |
+| enter | Start | "press Start", pause menu |
+| tab | Back | |
+| shift / ctrl, middle mouse | left / right stick click | |
+
+Camera rotation and zoom follow the game's own options screen (invert camera rotation, auto zoom).
+Keys are read only while the game window has focus, and are dropped when it loses focus, so an
+alt-tabbed game does not walk on by itself. While the F1 settings panel is up it owns the keyboard
+and the mouse and the game sees neither.
 
 ## Status
 
@@ -61,7 +91,7 @@ assets/        your disc image and/or the files extracted from it (never committ
 config/        game.toml - the recompiler config written by xbe_symbols, then hand-corrected
 docs/          analysis and bring-up notes
 sdk/           XboxXBERecomp SDK checkout (recompiler, runtime, XDK HLE, D3D12 renderer)
-src/common/    host-side code: game_info.cpp defines app::kGame
+src/common/    host-side code: game_info.cpp defines app::kGame, input_kbm.cpp the keyboard pad
 src/game/      hooks and overrides for recompiled functions (src/game is excluded from the host glob)
 tools/         xiso_extract.py (XDVDFS reader), xbe_info.py (XBE reader), env.bat (toolchain PATH)
 generated/     recompiler output (never committed)

@@ -4,6 +4,7 @@
 #include <cstring>
 
  #include "app/app.h"
+#include "common/input_kbm.h"
 #include "common/overlay.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -134,6 +135,14 @@ void AutostartPad(int port, input::Pad& pad) {
         LOGI("urbz autostart: synthetic A released (port 0)");
     }
 }
+
+// every polled pad: the scripted self-test first, then the keyboard and mouse (input_kbm.cpp).
+// Both only ever add to what a real controller reported.
+void PadHook(int port, input::Pad& pad) {
+    AutostartPad(port, pad);
+    kbm::Apply(port, pad);
+}
+
 }  // namespace
 
 // what the runtime asks of the game; strings must be set, hooks may stay null
@@ -152,8 +161,8 @@ const app::GameInfo app::kGame = {
     .init = nullptr,                         // after the settings load, before the window and boot
     .loaded = nullptr,                       // image in memory, before its entry point runs
     .window = nullptr,                       // the game window is up
-    .message = nullptr,                      // window messages first; true takes one
+    .message = &kbm::Message,                // window messages first; true takes one
     .ui = &overlay::Draw,                    // ImGui drawing each frame: F1 settings, F2 performance
-    .pad = &AutostartPad,                    // changes a polled pad (URBZ_AUTOSTART self-test)
+    .pad = &PadHook,                         // keyboard and mouse as port 0, URBZ_AUTOSTART self-test
     .rumble = nullptr,                       // changes a rumble before it is set
 };

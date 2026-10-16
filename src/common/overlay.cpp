@@ -5,6 +5,7 @@
 #include "common/overlay.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -39,6 +40,8 @@ Ring g_ring;
 bool g_perf_open = false, g_settings_open = false;
 bool g_settings_focus = false;  // the settings window takes focus the frame it opens
 float g_ui_scale = 0.0f;        // style and font scale in use, 0 before the first frame
+// g_settings_open is the render thread's; this is the copy the window and guest threads read
+std::atomic<bool> g_settings_up{false};
 
 // the settings panel edits a copy and only writes it back on Apply, so a half typed resolution
 // never reaches the renderer
@@ -469,6 +472,8 @@ void Draw(double fps) {
         }
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) g_perf_open = !g_perf_open;
+    // the keyboard-to-pad layer stands down while the panel has the keyboard (input_kbm.cpp)
+    g_settings_up.store(g_settings_open, std::memory_order_relaxed);
 
     // the mouse is only ImGui's while the settings panel is up; closed, the overlay neither
     // captures a click nor touches the cursor, and io.WantCaptureMouse stays false
@@ -479,5 +484,7 @@ void Draw(double fps) {
     if (g_perf_open) DrawPerf(fps);
     if (g_settings_open) DrawSettings();
 }
+
+bool SettingsOpen() { return g_settings_up.load(std::memory_order_relaxed); }
 
 }  // namespace overlay

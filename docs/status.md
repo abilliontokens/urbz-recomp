@@ -314,3 +314,144 @@ audio clock - and the Flash menus and title idle timer are wall-clock.
 Verified: `fps_cap` 60, 144 and unlimited, with a throwaway probe summing the engine's own dt
 against the wall clock - **1.000 game seconds per real second in all three**, at 60, 138 and 2474
 frames per second respectively, no exceptions. The probe was removed before shipping.
+
+## City frame rate: attribution, then the fixes
+
+Recorded 2026-10-16. Reported defect: the frame rate drops in the city districts, worst with the
+camera zoomed out.
+
+### What the profile said, before any optimisation
+
+Measured in a district from a save, windowed 640x480, camera director idle, at three camera
+distances (`cam+0x450` read live: 5.0, 15.7-19.4, 30.0). Each row is a frame-weighted mean over
+one-second perf blocks that passed a filter on camera angle, distance band, director state and Sim
+movement; block and frame counts are in the raw logs under `out/perf/`.
+
+| zoomed | fps (cap 60) | ms/frame | render thread `host` | title `in XDK draws` | of it `sendstate` | draws/frame |
+| --- | --- | --- | --- | --- | --- | --- |
+| in (d=5) | 56.7 | 17.63 | 5.09 | 7.08 | 4.84 | 801 |
+| mid | 47.8 | 20.93 | 5.43 | 8.13 | 5.21 | 855 |
+| out (d=30) | 43.4 | 23.03 | 5.96 | 8.81 | 5.74 | 929 |
+
+Three findings decided everything that followed:
+
+1. **The title thread is the critical path, not the GPU.** `waiting` was 0.00 ms with 0 waits in
+   every window at every distance: the title thread never blocked on the render thread, which was
+   busy 4.3-6.3 ms of a 15.6-24.0 ms frame and idle for the rest. Optimising the D3D12 backend
+   could therefore not shorten a frame - only make headroom.
+2. **The single largest renderer cost was on that thread**: `SendState`, the recorder's comparison
+   of all 14,424 bytes of draw state (226 pieces) on *every* draw and clear - 4.8-5.7 ms/frame,
+   about a quarter of the frame.
+3. **Zooming out costs more because more objects pass the frustum, not because they get bigger.**
+   The engine has no LOD selector and a fixed far plane of 2000 (`sub_0019CA90` stores near/far at
+   view+0x2F0/+0x2F8; the box test is `sub_0019E4F0`, called from the level pass `sub_001AC8D0`,
+   the static-model visibility method `sub_001DE0E0`, walls `sub_00035140` and Sims
+   `sub_0003CC90`). Between d=5 and d=30 the FOV widens 55 to 65 degrees and the pitch goes 13 to
+   58.5 degrees, which in a compact area covers 3.2-3.7x the ground. Verts per draw are the same at
+   both zooms (47); the draw count is what rises. The one explicit switch is a room-object cull at
+   0x1AD013 that only applies while the eye is below z = 5.0, i.e. d < ~10.
+
+### What was changed
+
+- **The host runtime was being compiled unoptimised.** `CMAKE_CXX_FLAGS_RELEASE` was empty for
+  clang targeting the MSVC ABI, so only the generated guest code carried `-O2` (set per source).
+  `sdk/cmake/XbeRecomp.cmake` now adds `-O2` for Release and RelWithDebInfo. `NDEBUG` stays
+  undefined deliberately: the logger's verbose mode keys off it.
+- **`SendState` is proportional to what changed** (`runtime/gpu/render_thread.cpp`,
+  `runtime/gpu/state.h`): every writer of `gpu::State` marks the 64-byte blocks it touched (write
+  first, then mark), the mask is 12 atomic words taken with `exchange(0)`, and only marked pieces
+  are compared and sent. `XBE_NO_STATE_DIRTY=1` restores the full comparison;
+  `XBE_STATE_VERIFY=1` runs both and logs any piece that changed without a mark, naming the field.
+- **Per-draw redundancy in the D3D12 backend** (`runtime/gpu/d3d12.cpp`): descriptor tables,
+  samplers, texture stages, shader/pipeline keys and constant uploads are reused when a byte-exact
+  compare says nothing changed; the second `BindTargets` and the depth-copy probe are gated; the
+  ~18 per-draw timer reads only happen under the perf switch. Each has its own `XBE_NO_*` opt-out.
+- **Shader and pipeline creation left the critical path**: compiles run on a worker pool
+  (`XBE_SHADER_THREADS=N`, default cores-2) and results are cached on disk in `shadercache/`
+  beside the exe, keyed by content hash and pinned to the adapter, driver and compiler
+  (`XBE_NO_SHADER_CACHE=1` disables). A draw whose pipeline is not ready is recorded into its own
+  command list and chained in order - no draw is skipped or substituted.
+- **Texture residency follows the real VRAM budget** (`IDXGIAdapter3::QueryVideoMemoryInfo`)
+  instead of a fixed sweep schedule.
+- **A second frame-rate-dependent camera bug** was found while mapping the engine and fixed in
+  `src/game/hooks.cpp`: the idle auto-return `sub_0001F0E0` grew its easing speed by a constant
+  per call (`[0x2E4D9C]` = 0.05 at 0x1F295) before dt-scaling the step, so the camera snapped back
+  harder the higher the frame rate. The acceleration is now scaled by the frame's real time.
+
+### Result
+
+Same save, same scene, same three distances, same block rules. Capped at 60, every distance now
+holds the cap - including zoomed out, which was 43.4 fps:
+
+| zoomed | before (cap 60) | after (cap 60) | before uncapped | after uncapped |
+| --- | --- | --- | --- | --- |
+| in (d=5) | 56.7 fps | 60.0 (cap) | 64.0 fps | 278.3 fps |
+| mid | 47.8 fps | 60.0 (cap) | 47.4 fps | 206.1 fps |
+| out (d=30) | 43.4 fps | 60.0 (cap) | 41.6 fps | 183.2 fps |
+
+Draw-normalised at 850 draws/frame, uncapped, the frame goes 20.43 ms to 4.59 ms (-78%). The 2x2
+against the compiler flag, measured rather than assumed:
+
+| at 850 draws | old code `-O0` | old code `-O2` | new code `-O0` | new code `-O2` |
+| --- | --- | --- | --- | --- |
+| ms/frame | 20.43 | 5.68 | 16.12 | **4.59** |
+| `sendstate` | 5.19 | 1.07 | 1.58 | 0.39 |
+| `in XDK draws` | 7.91 | 1.64 | 3.70 | 0.95 |
+| `host` (render thread) | 5.40 | 2.32 | 4.52 | 2.10 |
+| upload MB/frame | 5.46 | 5.45 | 3.49 | 3.51 |
+
+The two overlap, so the honest statement is multiplicative: the flag is x0.28, the renderer work
+x0.81 on top of it, combined x0.22. Ordered flag-first the renderer work is 7% of the saving;
+ordered renderer-first it is 27%. The renderer's share is still almost entirely title-thread work -
+at `-O2`, recording 1.21 to 0.53 ms and `sendstate` 1.07 to 0.39 ms, while `host` moves 2.32 to
+2.10 ms and `waiting` stays 0.
+
+**First entry into a district**, which is what "drops badly" felt like, was a synchronous compile
+stall: 452.8 ms in a single frame and 1.9 fps in the reference capture
+(`out/sub_stdout.log:1416-1419`), 647 ms of compiling in the worst second from a save. Now, cold
+cache: 239 ms of compiling in the worst second, worst block 40.9 fps, longest single frame 206.6
+ms. Warm cache (77 shaders, 103 pipeline blobs loaded): **no compiling at all**, worst block 53.8
+fps, longest frame 85.9 ms.
+
+### Verification
+
+- `XBE_STATE_VERIFY=1` over a whole session - boot, district load, two rounds of the three camera
+  distances, two zoom sweeps, a stick walk and a keyboard walk that moved the Sim between rooms,
+  camera rotation, pause open and close: **zero** "changed with no mark" lines.
+- The verifier did log three `deferred render state 127 changed ... with no XDK dirty flag` lines
+  during boot. State 127 is `kRsPresentationInterval`, which nothing in `runtime/gpu` or
+  `runtime/xdk` reads, so it changes nothing today - but it proves the XDK dirty-flag word is not
+  authoritative, so the deferred-state gate also does a full compare once per presented frame,
+  which bounds any unflagged change to one frame of staleness.
+- All five measured runs: exit 0, zero `[error]` lines, zero `pipeline creation failed`, no crash
+  dumps. The `[warn]` set is identical to the baseline's (dsound exports running original code,
+  three ignored `wbinvd`).
+- Screenshots at the same view as the baseline: static scenery is pixel-identical (mean per-channel
+  difference 0.26 and 0.00 on the two walls; whole-frame 2.28 is the Sim's pose and the HUD clock).
+  No missing geometry, no stale textures. Texture uploads per frame are 0 in steady state in every
+  configuration including the baseline, and the first-entry totals match (81-99 versus 86-104), so
+  nothing is being skipped that the scene needs.
+- Game speed is unchanged by the frame rate: the in-game clock advances 0.793, 0.794 and 0.793
+  game-minutes per wall second at capped 60, uncapped ~180-280 fps, and the uncapped control.
+
+### What still costs, and the ceiling
+
+Zooming out still costs +1.87 ms/frame uncapped at `-O2`, and +1.49 ms of that is guest work
+outside the XDK draw calls - the engine's own per-object culling, sorting into 46 distance buckets
+(`sub_001AD5D0`, `sub_001AD880`) and submission, which is recompiled title code. The renderer side
+of a zoom-out is now 0.38 ms. Nothing further on the host can remove that 1.49 ms; it would take
+changing what the title submits.
+
+One unexplained observation, recorded rather than hidden: two discarded uncapped attempts rendered
+a black world (HUD live, clock advancing, district files opened, ~250 draws) while an external
+2 kHz memory sampler was attached during the load. Six runs without the sampler, and both capped
+runs with it, loaded correctly, and it was never reproduced in a measured run.
+
+### Reading the perf leaves after this change
+
+The draw-split leaves moved scope, so they are not comparable with older logs (the parent `draw`
+and `host` totals are): `geom` now covers geometry upload plus all draw-state recording (pipeline,
+root CBVs, descriptor tables, viewport, scissor, blend factor, stencil ref) plus the draw call;
+`views` is descriptor and sampler preparation only; `consts` is constant computation and ring
+upload only; `pso` is shader and pipeline resolution as before. `compile` additionally accumulates
+render-thread stalls waiting for a pending pipeline when the worker pool is on.

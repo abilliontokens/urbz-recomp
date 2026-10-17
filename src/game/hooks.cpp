@@ -111,3 +111,21 @@ X86_FUNC(sub_0018D6D0) {
     X86_MEM8(pad + 0x1D9u) = uint8_t(std::clamp(int(3.0 * calls_per_tick + 0.5), 1, 255));
     __imp__sub_0018D6D0(ctx, base);
 }
+
+// The idle auto-return, sub_0001F0E0(camera in ESI, one stack dword at [esp+4], ret 4). After two
+// seconds without camera input (the countdown at cam+0x3C4, which already counts down by the frame
+// delta) the camera eases back to its default distance. The easing *speed* at cam+0x3CC grows by
+// [0x2E4D9C] = 0.05 per call at 0x1F295, and only then is the step dt-scaled (speed * [0x2E2A80] at
+// 0x1F2B4), so the acceleration - not the velocity - was tied to the frame rate: the camera snapped
+// back 2.4x harder at 144 fps. The same scaling is applied to the dead auto-yaw twin at [0x2E4D98]
+// so it cannot come back wrong if its gate byte (byte_2E4D90) is ever set.
+X86_FUNC(__imp__sub_0001F0E0);
+X86_FUNC(sub_0001F0E0) {
+    const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
+    const float zoom = X86_MEMF32(0x2E4D9Cu), yaw = X86_MEMF32(0x2E4D98u);
+    X86_MEMF32(0x2E4D9Cu) = zoom * scale;
+    X86_MEMF32(0x2E4D98u) = yaw * scale;
+    __imp__sub_0001F0E0(ctx, base);  // pops its own argument
+    X86_MEMF32(0x2E4D9Cu) = zoom;
+    X86_MEMF32(0x2E4D98u) = yaw;
+}

@@ -29,6 +29,19 @@ engine quantised its frame step to whole 60ths of a second, which made it run 2.
 the host replaces that quantiser with the time that really passed (`src/game/hooks.cpp`, measured at
 1.000 game seconds per real second at 60, 144 and unlimited).
 
+The city districts hold 60 fps at every camera distance, where they used to fall to 43 fps zoomed
+out; uncapped, the same scenes run 183-278 fps. The engine has no level of detail and submits every
+visible object as its own draw call, so zooming out simply submits more - the host side of that was
+made cheap rather than the view restricted. First entry into a district no longer stalls on shader
+compilation: compiles run on worker threads and are cached in `shadercache\` beside the exe, so a
+district that cost 452 ms in a single frame now costs none once that cache is warm. The measured
+before/after, the 2x2 against the compiler flag and the verification are in `docs/status.md`.
+
+Diagnostics, if a scene ever looks wrong: `XBE_NO_DRAW_REUSE=1` turns off the renderer's per-draw
+reuse, `XBE_NO_STATE_DIRTY=1` the recorder's dirty-state fast path, `XBE_SHADER_THREADS=0` the
+compile workers, `XBE_NO_SHADER_CACHE=1` the on-disk cache, and `XBE_STATE_VERIFY=1` cross-checks
+the state fast path against a full comparison and logs anything it misses.
+
 If it says the game is missing, the `assets` folder has no image or extracted `default.xbe` in it.
 The exe only runs the XBE it was recompiled from - SHA-1 `5712b6a3...`, USA retail; any other build
 is offered as a warning you have to confirm, and will not run properly if you take it.

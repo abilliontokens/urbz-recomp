@@ -3,6 +3,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <set>
+#include <vector>
 
 #include "cpu/x86_ops.h"
 #include "xdk/hle.h"
@@ -134,12 +139,51 @@ X86_FUNC(sub_0001F0E0) {
 // binding group by sub_00173D80 from the gameplay tick. For an analog binding it reads the pad's
 // deadzoned stick float - `[pad+0x200]` is the history block, +0x28/+0x2C are LX/LY and
 // +0x30/+0x34 RX/RY - and hands it to the bound handler as a displacement (`call [edx+0x30]` at
-// 0x173488/0x1734A4) without any frame-time factor. The selection cursor is bound through it, so
-// above 60 fps it moved across the screen proportionally faster. Scaling the stick floats for the
-// duration of the call turns that per-call displacement into a per-second rate; the pressed and
-// released paths, which pass a literal 1.0f, are untouched. The pad array is at 0x2F027C.
+// 0x173488/0x1734A4) with no frame-time factor, so a handler that integrates it directly moves
+// proportionally faster the higher the frame rate. The blue selection cursor is one such handler.
+//
+// Scaling the sticks for *every* group was tried and is wrong: walking goes through the same
+// executor and its handler already applies its own frame time, so the scale corrected it twice -
+// measured 5.0 units/s at 60 fps against 0.51 at 255 fps. The scale therefore applies only to
+// handlers named in XBE_BIND_SCALE (comma-separated guest addresses of the `vtable+0x30` target),
+// which is also how a handler is identified in the first place: XBE_BIND_LOG=1 reports each
+// distinct handler the executor dispatches to, once, with its group and vtable.
 X86_FUNC(__imp__sub_00173300);
 X86_FUNC(sub_00173300) {
+    static const std::vector<uint32_t> scaled = [] {
+        std::vector<uint32_t> v;
+        const char* s = std::getenv("XBE_BIND_SCALE");
+        for (const char* p = s; p && *p;) {
+            char* end = nullptr;
+            const unsigned long a = std::strtoul(p, &end, 0);
+            if (end == p) break;
+            if (a) v.push_back(uint32_t(a));
+            p = *end ? end + 1 : end;
+        }
+        if (!v.empty()) LOGR("input: scaling %zu bound handler(s) by frame time", v.size());
+        return v;
+    }();
+    static const bool log_handlers = [] {
+        const char* s = std::getenv("XBE_BIND_LOG");
+        return s && s[0] && std::strcmp(s, "0") != 0;
+    }();
+
+    const uint32_t group = X86_MEM32(ctx.esp + 0x4u);
+    const uint32_t obj = group ? X86_MEM32(group + 0x18u) : 0;
+    const uint32_t vt = obj ? X86_MEM32(obj) : 0;
+    const uint32_t fn = vt ? X86_MEM32(vt + 0x30u) : 0;
+    if (log_handlers && fn) {
+        static std::mutex m;
+        static std::set<uint32_t> seen;
+        std::lock_guard lock(m);
+        if (seen.insert(fn).second)
+            LOGR("input: bound handler %08X (group %08X, object %08X, vtable %08X)", fn, group, obj, vt);
+    }
+    const bool scale_this = fn && std::find(scaled.begin(), scaled.end(), fn) != scaled.end();
+    if (!scale_this) {
+        __imp__sub_00173300(ctx, base);  // pops its own argument
+        return;
+    }
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     uint32_t hist[4] = {};
     float saved[4][4];
@@ -152,7 +196,7 @@ X86_FUNC(sub_00173300) {
             X86_MEMF32(hist[i] + 0x28u + uint32_t(a) * 4u) = saved[i][a] * scale;
         }
     }
-    __imp__sub_00173300(ctx, base);  // pops its own argument
+    __imp__sub_00173300(ctx, base);
     for (int i = 0; i < 4; i++) {
         if (!hist[i]) continue;
         for (int a = 0; a < 4; a++) X86_MEMF32(hist[i] + 0x28u + uint32_t(a) * 4u) = saved[i][a];

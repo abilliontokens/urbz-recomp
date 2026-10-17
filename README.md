@@ -1,4 +1,4 @@
-# The Urbz: Sims in the City - static recompilation
+# The Urbz: Sims in the City - Static Recompilation
 
 An unofficial native PC port of the original Xbox release of *The Urbz: Sims in the City* (USA),
 produced by statically recompiling the game's x86 XBE with the

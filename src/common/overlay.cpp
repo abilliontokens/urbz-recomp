@@ -4,6 +4,8 @@
 // trust that a context, a window size or a pad exists.
 #include "common/overlay.h"
 
+#include "common/hud.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
@@ -418,6 +420,16 @@ void DrawSettings() {
         DrawQuality();
         ImGui::EndTable();
     }
+    ImGui::SeparatorText("HUD");
+    if (BeginRows("##hud_rows", label_width)) {
+        Row("Modern HUD");
+        // straight to the live flag, not the draft: it takes effect the moment it is ticked, and
+        // Save writes it to settings.toml through kGame.options
+        ImGui::Checkbox("##modernhud", &hud::g_enabled);
+        Note("Draws the reputation, clock, mood and motives as vectors at the output's own "
+             "resolution. Off gives the game's original 640x480 HUD back.");
+        ImGui::EndTable();
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -482,7 +494,15 @@ void Draw(double fps) {
     if (g_settings_open) io.ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange);
     else io.ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
 
-    if (!g_perf_open && !g_settings_open) return;  // closed: the overlay draws nothing at all
+    // the HUD draws whether or not a panel is open: it is the game's own, replaced
+    if (hud::g_enabled) {
+        hud::State hs;
+        if (hud::Read(hs)) hud::Draw(hs);
+        hud::Chat hc;
+        if (hud::ReadChat(hc)) hud::DrawChat(hc);
+    }
+
+    if (!g_perf_open && !g_settings_open) return;  // closed: the overlay draws nothing else
     if (g_perf_open) DrawPerf(fps);
     if (g_settings_open) DrawSettings();
 }

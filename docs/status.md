@@ -579,3 +579,69 @@ title-thread bound and the critical-path win was the `-O0` to `-O2` flag, which 
 Switches added while bisecting, kept because they make the next one cheaper: every frame-rate
 wrapper in `src/game/hooks.cpp` can be turned off for a run - `URBZ_NO_STEP`, `URBZ_NO_ZOOM`,
 `URBZ_NO_REPEAT`, `URBZ_NO_UIGATE`, `URBZ_NO_IDLECAM`, `URBZ_NO_BINDINGS`, `URBZ_NO_SHOTCAM`.
+
+## The modern HUD
+
+Recorded 2026-10-17. The game's own HUD is a 640x480 movie stretched over a 4K output: soft icons,
+pixelated text, a bitmap star. `src/common/hud_draw.cpp` redraws what it shows as ImGui draw-list
+vectors at the output's own resolution, `src/game/hud_state.cpp` reads the values out of the guest,
+and the setting `modern_hud` (F1 panel, on by default) switches back to the original.
+
+### Reading the values
+
+| Shown | Where it comes from |
+| --- | --- |
+| Five motives and mood | `H + 0xA8 + 6*player + 0..5`, percent bytes 0..100 |
+| Reputation number | `H + 0x970 + 2*player` - `HUD_rep`, what `sub_142180` returns |
+| Bar beside it | `H + 0x96C` (base) to `H + 0x974` (next unlock) |
+| Clock | `G = *[0x2EDF60]`, `int16 [G+0x14]` hour, `[G+0x1E]` minute |
+| Action queue | controller from `sub_12FF00` (`this` in esi): count at `+336`, running slot at `+777` |
+| Dialogue | `[H+0xE0]` state, `[H+0xD4]` record: body, speaker and continue label as string objects |
+
+`H` is the HUD object, captured from the game's own variable getter (`sub_1416C0`, `this` in ecx)
+rather than trusted from `*[0x35A740]`, which happens to agree but is not what the game passes.
+
+**The motive bytes are a cache, not state.** `sub_142430` asks the sim for one motive and writes
+the byte the HUD reads; nothing refreshes it on its own - the movie's bars pull it while they are
+on screen. Hiding those bars therefore froze the modern HUD at zeroes while the game's own bars had
+been full. The walk hook now makes those six calls itself each frame, which is exactly what the
+game does when its bars are up.
+
+### Hiding the old HUD, the game's own way
+
+The display-list walk (`sub_229760`) renders a child only when bit `0x8000` of `[child+0x04]` is
+set - the bit ActionScript's `_visible` writes. Clearing it on the status clips makes the game skip
+them and their subtrees, so nothing is drawn and then covered. The clips are resolved by name
+through the game's own child lookup (`sub_1FA850`), which takes **one path segment per call**:
+`ingame` -> `hud0` -> the clip. Whole-path probes matched nothing, which is why an earlier attempt
+found no clips at all. The names are the movie's own, read out of `DATA/flashes.arc`:
+`mc_meters`, `mc_meters_job`, `mc_simoleons`, `mc_meterbar0..4`, `mc_meterClockPoll`, `mc_jobIcons`,
+`mc_ringtone`, `mc_npcDialog`, `mc_npc2Dialog`, and the action queue's `aq%d`/`aqa%d` slot plates.
+The pie menu (`mc_actionProto`), the lot name and the queue's `aqi%d` pictures stay: those are
+interaction, and the pictures are rendered by the game into clips the host cannot redraw.
+
+The bit stays cleared. Restoring it at the end of the walk put the HUD straight back on screen -
+the draw happens after the walk returns - and re-clearing every frame covers the script turning its
+clips back on while it animates the HUD in.
+
+### Two reads that were wrong, and how they showed
+
+- **Every pointer was rejected.** `GuestPtr` capped at `0x8000000`, but every Apt clip lives in the
+  physical window at `0x80000000` (`0x83xxxxxx`) and host scratch in the system pool at
+  `0xB0000000`. Probes, clip identity and the dataset walk all silently returned nothing. The check
+  now mirrors `sdk/runtime/kernel/memory.h` and additionally requires every page it spans to be
+  committed - without that, string bytes that look like an address (`"ise"` -> `0x00657369`) pass a
+  range test and fault the host, which is exactly how the first child-list walk crashed.
+- **The box is not a level.** It was read out of the `RepTitleTable` dataset, whose cell holds a
+  pointer to a pointer to a localized string ("Level 1"); the number the game actually puts in the
+  box is `HUD_rep`, the reputation itself. The dataset walk is gone.
+
+### Verified in play
+
+Driven from `tools/drive.py` (menu -> Load Game -> the owner's save -> city, by matching each screen
+against a reference frame): motives track the sim and refill after using a toilet, the clock matches
+the game's own, the reputation box reads the same number the original drew, the legacy status clips
+and the bottom-right queue plates are gone, and NPC dialogue renders in the modern card with the
+game's own colour spans. Placement is measured, not guessed: the title letterboxes its picture
+(rows 0-65 and 2108-2159 are black at 3840x2160), and the original HUD's last row sat at 0.894 of
+the output height, which is where the modern one sits.

@@ -4,6 +4,7 @@
 #include <cstring>
 
  #include "app/app.h"
+#include "common/hud.h"
 #include "common/input_kbm.h"
 #include "common/overlay.h"
 #include "core/input.h"
@@ -155,7 +156,8 @@ const app::GameInfo app::kGame = {
     .splash = L"splash",                     // optional splash.png or splash.bmp beside the exe
     .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe with its DATA and movies folders beside it.",
     .images = {{"default.xbe", "Urbz"}},     // each recompiled xbe and its exe, for title launches
-    .options = {},                           // game settings kept in the settings file
+    // game settings kept in the settings file; the HUD one defaults on (hud.cpp)
+    .options = {{"modern_hud", &hud::g_enabled, nullptr}},
     .load = nullptr,                         // reads more from the settings file's toml::table
     .save = nullptr,                         // writes more into it
     .init = nullptr,                         // after the settings load, before the window and boot

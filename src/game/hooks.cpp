@@ -15,6 +15,15 @@
 // the frame step the engine is working with, seconds, published by sub_0018E360 below
 namespace {
 std::atomic<double> g_dt{1.0 / 60.0};
+
+// Each frame-rate wrapper below can be switched off for the run, so a defect can be bisected
+// against the stock behaviour without a rebuild: URBZ_NO_STEP (the frame step itself),
+// URBZ_NO_ZOOM (camera zoom rate), URBZ_NO_REPEAT (pad auto-repeat counts), URBZ_NO_UIGATE (the
+// menu held-repeat gate). Off means the recompiled function runs exactly as the image wrote it.
+bool HookOff(const char* name) {
+    const char* v = std::getenv(name);
+    return v && v[0] && std::strcmp(v, "0") != 0;
+}
 }  // namespace
 
 // D3DDevice_InsertCallback(Flags, pCallback, Context) at 0x24E320.
@@ -57,7 +66,9 @@ HLE_STDCALL(D3DDevice_InsertCallback, 3) {
 // (clock+5 is cleared at 0x18E0E2 and again at 0x1B02EE), and the render thread's type 4 handler
 // sub_001D44D0 discards that field anyway; the running total [0x358898] is copied to [0x3588BC]
 // by the two pad polls and never read again.
+X86_FUNC(__imp__sub_0018E360);
 X86_FUNC(sub_0018E360) {
+    if (HookOff("URBZ_NO_STEP")) { __imp__sub_0018E360(ctx, base); return; }
     constexpr double kTick = 0.001;  // seconds per tick, 1/60 before this
     constexpr int kMaxTicks = 250;   // 0.25 s, the engine's own ceiling of 15 ticks of 1/60 s
     const float elapsed = X86_MEMF32(ctx.esp + 0x4u);
@@ -90,6 +101,7 @@ bool rate_invalid(float rate, float scale) {
     return !(rate > 0.0f) || rate > 100.0f || !(scale > 0.0f) || scale > 16.0f;
 }
 X86_FUNC(sub_0001FC20) {
+    if (HookOff("URBZ_NO_ZOOM")) { __imp__sub_0001FC20(ctx, base); return; }
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     const uint32_t params = X86_MEM32(ctx.eax + 0x8u);
     // [cam+8] is only a valid params block on the paths where the original reads the rate out of
@@ -119,6 +131,7 @@ X86_FUNC(sub_0001FC20) {
 // between all 8 calls a frame, which clustered back-to-back and made it 4-6x too slow instead.)
 X86_FUNC(__imp__sub_0018D6D0);
 X86_FUNC(sub_0018D6D0) {
+    if (HookOff("URBZ_NO_REPEAT")) { __imp__sub_0018D6D0(ctx, base); return; }
     const double calls_per_tick = 1.0 / (60.0 * g_dt.load(std::memory_order_relaxed));
     const uint32_t pad = ctx.eax;
     X86_MEM8(pad + 0x1D8u) = uint8_t(std::clamp(int(10.0 * calls_per_tick + 0.5), 1, 255));
@@ -146,17 +159,27 @@ X86_FUNC(sub_0018D6D0) {
 // return 0 ("do not post") and pop the function's two stack arguments (ret 8).
 X86_FUNC(__imp__sub_0001D530);
 X86_FUNC(sub_0001D530) {
+    if (HookOff("URBZ_NO_UIGATE")) { __imp__sub_0001D530(ctx, base); return; }
+    constexpr double kConsole = 1.0 / 60.0;
+    const double dt = g_dt.load(std::memory_order_relaxed);
+    // at or below the console's rate there is nothing to throttle: running the original on every
+    // call with its own delta is exactly what the console did, and pinning the delta there would
+    // advance its timer slower than real time
+    if (dt >= kConsole) {
+        __imp__sub_0001D530(ctx, base);
+        return;
+    }
     static double pending[16] = {};  // one accumulator per (pad, direction)
     const uint32_t key = (X86_MEM32(ctx.esp + 0x4u) & 3u) * 4u + (X86_MEM32(ctx.esp + 0x8u) & 3u);
-    pending[key] += g_dt.load(std::memory_order_relaxed);
-    if (pending[key] < 1.0 / 60.0) {
+    pending[key] += dt;
+    if (pending[key] < kConsole) {
         ctx.eax = 0;
         ctx.esp += 12;  // ret 8
         return;
     }
-    pending[key] -= 1.0 / 60.0;
+    pending[key] -= kConsole;
     const float delta = X86_MEMF32(0x358494u);
-    X86_MEMF32(0x358494u) = float(1.0 / 60.0);
+    X86_MEMF32(0x358494u) = float(kConsole);
     __imp__sub_0001D530(ctx, base);
     X86_MEMF32(0x358494u) = delta;
 }
@@ -170,6 +193,7 @@ X86_FUNC(sub_0001D530) {
 // so it cannot come back wrong if its gate byte (byte_2E4D90) is ever set.
 X86_FUNC(__imp__sub_0001F0E0);
 X86_FUNC(sub_0001F0E0) {
+    if (HookOff("URBZ_NO_IDLECAM")) { __imp__sub_0001F0E0(ctx, base); return; }
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     const float zoom = X86_MEMF32(0x2E4D9Cu), yaw = X86_MEMF32(0x2E4D98u);
     X86_MEMF32(0x2E4D9Cu) = zoom * scale;
@@ -194,6 +218,7 @@ X86_FUNC(sub_0001F0E0) {
 // distinct handler the executor dispatches to, once, with its group and vtable.
 X86_FUNC(__imp__sub_00173300);
 X86_FUNC(sub_00173300) {
+    if (HookOff("URBZ_NO_BINDINGS")) { __imp__sub_00173300(ctx, base); return; }
     static const std::vector<uint32_t> scaled = [] {
         std::vector<uint32_t> v;
         const char* s = std::getenv("XBE_BIND_SCALE");
@@ -252,6 +277,7 @@ X86_FUNC(sub_00173300) {
 // a scripted shot settled faster the higher the frame rate. Same treatment as the others.
 X86_FUNC(__imp__sub_0001F320);
 X86_FUNC(sub_0001F320) {
+    if (HookOff("URBZ_NO_SHOTCAM")) { __imp__sub_0001F320(ctx, base); return; }
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     const float step = X86_MEMF32(0x2E4DA4u);
     X86_MEMF32(0x2E4DA4u) = step * scale;

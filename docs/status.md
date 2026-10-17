@@ -455,3 +455,49 @@ root CBVs, descriptor tables, viewport, scissor, blend factor, stencil ref) plus
 `views` is descriptor and sampler preparation only; `consts` is constant computation and ring
 upload only; `pso` is shader and pipeline resolution as before. `compile` additionally accumulates
 render-thread stalls waiting for a pending pipeline when the worker pool is on.
+
+## Camera and cursor rates after the frame-rate work
+
+Recorded 2026-10-16. Owner report once the city ran fast: the zoom sometimes did not hold and
+drifted out, zoom felt fast above 60 fps, and the blue selection cursor felt much too fast above
+60 fps. Measured in a district at 60 fps capped against 254-292 fps uncapped, sampling guest state
+at 100 Hz (camera distance `cam+0x450`, idle countdown `cam+0x3C4`, return speed `cam+0x3CC`,
+cursor `SimInteractor+0x0C`, Sim position through the camera target `cam+0x444`):
+
+| what | at 60 fps | uncapped | ratio | verdict |
+| --- | --- | --- | --- | --- |
+| held zoom | 77.98 u/s | 77.24 u/s | 0.99 | already correct |
+| idle auto-return (countdown, ease, peak speed) | 0.84 s / 2.15 s / 3.95 | 0.85 s / 2.12 s / 3.90 | ~1.00 | already correct |
+| free-roam selection cursor | 4.611 u/s | 4.722 u/s | 1.02 | already correct |
+| Sim walk | 4.639 u/s | 4.663 u/s | 1.01 | already correct |
+
+So neither the zoom nor the free-roam cursor was frame-rate dependent. The camera jumping from
+distance 5 to 30 while walking is the game's own outdoor reframe when the Sim leaves a building,
+and the zoom "not holding" is the designed auto-return: 2.0 s (`[0x2E4D94]`) after the last camera
+input, `sub_0001F0E0` eases back to the home distance `[[cam+8]+0x84]` = 5.0, at the same rate at
+any frame rate.
+
+What was genuinely wrong and is fixed:
+
+- `sub_0001FC20` scaled the out-of-bounds dolly `[0x2E5DE8]` as well as the zoom rate, but the
+  dolly multiplies a delta the rate had already scaled - it was scaling squared. Only the rate is
+  scaled now.
+- `sub_0001F320` (shot-mode camera glide, `[0x2E4DA4]` = 0.6 per call) had no frame-time factor
+  and is wrapped like its siblings.
+
+One attempt in this round was wrong and is recorded because the failure is instructive: the script
+binding executor `sub_00173300` hands raw stick floats to bound handlers with no frame-time
+factor, which looked like the cursor's mover. Scaling the sticks for every binding group made
+**walking ten times too slow uncapped** (5.0 u/s at 60 fps against 0.51 at 255 fps), because the
+movement handler already applies frame time. It was reverted the same session. Instrumentation
+left behind: `XBE_BIND_LOG=1` reports each distinct handler the executor dispatches to (in this
+title exactly one ever does - `0x0017F600`, the movement handler, vtable `0x002CF0C0`), and
+`XBE_BIND_SCALE=<addresses>` scales only named handlers. Both default to off.
+
+The free-roam cursor is the `SimInteractor` object's `+0x0C` world position, written by
+`sub_001764B0` from `sub_0017E400`, which multiplies the displacement by `[0x2E2A80]` at
+0x17653A-0x176553 - already correct. The decorating interactors (`sub_001766F0`, used by
+FloorPainter `sub_00171830`, WallManipulator `sub_001818D0`, WallPainter `sub_001842B0`) do not
+read the delta, but every caller gates them with a press-transition pulse, so they emit one fixed
+step per press rather than a per-frame rate. If a fast cursor is ever seen again, those modes are
+where to look, and the method is above: sample that interactor's `+0x0C` at both frame rates.

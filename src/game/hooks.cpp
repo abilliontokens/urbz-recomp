@@ -81,12 +81,12 @@ X86_FUNC(__imp__sub_0001FC20);
 X86_FUNC(sub_0001FC20) {
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     const uint32_t params = X86_MEM32(ctx.eax + 0x8u);
-    const float rate = X86_MEMF32(params + 0x54u), dolly = X86_MEMF32(0x2E5DE8u);
+    const float rate = X86_MEMF32(params + 0x54u);
+    // only the rate: the out-of-bounds dolly at 0x1FE42 multiplies [0x2E5DE8] by the zoom delta
+    // this scaling already produced, so scaling it too would make that move scale squared
     X86_MEMF32(params + 0x54u) = rate * scale;
-    X86_MEMF32(0x2E5DE8u) = dolly * scale;
     __imp__sub_0001FC20(ctx, base);
     X86_MEMF32(params + 0x54u) = rate;
-    X86_MEMF32(0x2E5DE8u) = dolly;
 }
 
 // Button auto-repeat, sub_0018D6D0(pad in eax). It counts each held button's timer down by one
@@ -128,4 +128,45 @@ X86_FUNC(sub_0001F0E0) {
     __imp__sub_0001F0E0(ctx, base);  // pops its own argument
     X86_MEMF32(0x2E4D9Cu) = zoom;
     X86_MEMF32(0x2E4D98u) = yaw;
+}
+
+// The script-binding executor, sub_00173300(group entry on the stack, ret 4), pumped for every
+// binding group by sub_00173D80 from the gameplay tick. For an analog binding it reads the pad's
+// deadzoned stick float - `[pad+0x200]` is the history block, +0x28/+0x2C are LX/LY and
+// +0x30/+0x34 RX/RY - and hands it to the bound handler as a displacement (`call [edx+0x30]` at
+// 0x173488/0x1734A4) without any frame-time factor. The selection cursor is bound through it, so
+// above 60 fps it moved across the screen proportionally faster. Scaling the stick floats for the
+// duration of the call turns that per-call displacement into a per-second rate; the pressed and
+// released paths, which pass a literal 1.0f, are untouched. The pad array is at 0x2F027C.
+X86_FUNC(__imp__sub_00173300);
+X86_FUNC(sub_00173300) {
+    const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
+    uint32_t hist[4] = {};
+    float saved[4][4];
+    for (int i = 0; i < 4; i++) {
+        const uint32_t pad = X86_MEM32(0x2F027Cu + uint32_t(i) * 4u);
+        hist[i] = pad ? X86_MEM32(pad + 0x200u) : 0;
+        if (!hist[i]) continue;
+        for (int a = 0; a < 4; a++) {
+            saved[i][a] = X86_MEMF32(hist[i] + 0x28u + uint32_t(a) * 4u);
+            X86_MEMF32(hist[i] + 0x28u + uint32_t(a) * 4u) = saved[i][a] * scale;
+        }
+    }
+    __imp__sub_00173300(ctx, base);  // pops its own argument
+    for (int i = 0; i < 4; i++) {
+        if (!hist[i]) continue;
+        for (int a = 0; a < 4; a++) X86_MEMF32(hist[i] + 0x28u + uint32_t(a) * 4u) = saved[i][a];
+    }
+}
+
+// Shot-mode camera glide, sub_0001F320. It walks the camera position (cam+0x444/0x448/0x44C)
+// toward its target by [0x2E4DA4] = 0.6 per call with no frame-time factor (0x1F426-0x1F469), so
+// a scripted shot settled faster the higher the frame rate. Same treatment as the others.
+X86_FUNC(__imp__sub_0001F320);
+X86_FUNC(sub_0001F320) {
+    const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
+    const float step = X86_MEMF32(0x2E4DA4u);
+    X86_MEMF32(0x2E4DA4u) = step * scale;
+    __imp__sub_0001F320(ctx, base);
+    X86_MEMF32(0x2E4DA4u) = step;
 }

@@ -501,3 +501,37 @@ FloorPainter `sub_00171830`, WallManipulator `sub_001818D0`, WallPainter `sub_00
 read the delta, but every caller gates them with a press-transition pulse, so they emit one fixed
 step per press rather than a per-frame rate. If a fast cursor is ever seen again, those modes are
 where to look, and the method is above: sample that interactor's `+0x0C` at both frame rates.
+
+## Menu repeat speed, and a driver crash after selecting an Urbie
+
+Recorded 2026-10-16.
+
+**Menus and name entry repeated too fast at high frame rates.** Not the pad path: the
+Create-an-Urb name keyboard (`tsc3_cas_keyboard`, an Apt movie) and every menu move on router
+events, and the router's held-direction gate `sub_0001D530` is the rate limiter. It advances a
+global `[0x378B60]` by the honest clock delta `[0x358494]`, but then adds `int([0x378B60] * 30)`
+- the *cumulative* tick count, clamped to 4 - into each direction's accumulator
+(`[0x3584D8 + (pad*4+dir)*4]`, threshold `[0x3584B8 + ...]` starting at 22, -3 per fire, floor
+12). Adding a cumulative count once per call makes the rate quadratic in the call rate:
+simulated from the guest algorithm, ~8.8 repeats/s at 60 fps, 15.8/s at 144, 27.8/s at 240.
+`src/game/hooks.cpp` now gates `sub_0001D530` per (pad, direction) to console cadence: the
+original runs once per 1/60 s with `[0x358494]` (whose only reader is this function) pinned to
+exactly 1/60 for the call and restored after; skipped calls return 0 and pop the arguments
+(ret 8). The pad auto-repeat `sub_0018D6D0`, whose repeat word only one widget reads
+(`sub_0012F2D0` mode 4), was also corrected: its delay/rate counts are rescaled by
+`1/(60 * dt)` - 2 calls per pad per frame over the console's 120 calls/s - where an earlier
+version smoothed gaps between all 8 back-to-back calls a frame and ran 4-6x too *slow*.
+
+**Crash after selecting an Urbie (2026-10-16 19:41).** `Urbz.exe - Application Error`, read of
+`0x28`. The minidump (`CrashDumps/Urbz.2026.10.16_19.41.15.dmp`, beside the exe in
+`out/build/release`) names the faulting module: `nvwgf2umx.dll` (the NVIDIA D3D12 user-mode
+driver) at RVA 0x341259, reading address 0x28, exception code
+0xC0000005 on thread 15900. There is no `exception` line in `logs/urbz_015.log` - the host's
+crash handler logs guest-thread exceptions with guest registers, and this fault was on a host
+thread, so the crash is in submitted graphics work reaching the driver, not in guest code and
+not at a guest address. The log's last activity is a burst of fresh vertex-shader compilations
+(`d3d: vertex shader B0108E81`...) at 148.6 s during the character-select transition. The
+`sub_0001FC20` zoom wrapper gained a defensive guard in the same change (a null `[cam+8]` or an
+implausible rate now runs the original untouched instead of writing into guest memory), but the
+dump's fault address is in the driver, not at anything that wrapper writes. If it recurs, keep
+the .dmp and the matching log; the pair is what a driver-side triage needs.

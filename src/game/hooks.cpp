@@ -83,9 +83,22 @@ X86_FUNC(sub_0018E360) {
 // scales them to the frame that really passed for the duration of the call and puts them back:
 // zoom now moves at the same speed per second at 60, 144 or 240 fps.
 X86_FUNC(__imp__sub_0001FC20);
+
+// a rate that is not a plausible positive zoom speed, or a scale from a frame that was not a
+// frame time: the original's own per-frame value is the right answer for both
+bool rate_invalid(float rate, float scale) {
+    return !(rate > 0.0f) || rate > 100.0f || !(scale > 0.0f) || scale > 16.0f;
+}
 X86_FUNC(sub_0001FC20) {
     const float scale = float(g_dt.load(std::memory_order_relaxed) * 60.0);
     const uint32_t params = X86_MEM32(ctx.eax + 0x8u);
+    // [cam+8] is only a valid params block on the paths where the original reads the rate out of
+    // it, so a null one or an implausible rate has to mean "run the original untouched", not a
+    // write into low guest memory or over whatever lives at that offset.
+    if (params < 0x10000u || rate_invalid(X86_MEMF32(params + 0x54u), scale)) {
+        __imp__sub_0001FC20(ctx, base);
+        return;
+    }
     const float rate = X86_MEMF32(params + 0x54u);
     // only the rate: the out-of-bounds dolly at 0x1FE42 multiplies [0x2E5DE8] by the zoom delta
     // this scaling already produced, so scaling it too would make that move scale squared
@@ -96,25 +109,56 @@ X86_FUNC(sub_0001FC20) {
 
 // Button auto-repeat, sub_0018D6D0(pad in eax). It counts each held button's timer down by one
 // per call (0x18D6D0 onwards, reloading from the pad's delay byte +0x1D8 = 10 and rate byte
-// +0x1D9 = 3), and the pad manager calls it twice a frame, so on the console a menu repeated
-// after 10/120 s and then every 3/120 s. Tied to calls, a 144 fps game scrolls lists 2.4x too
-// fast. The counts are rescaled to this machine's call rate - measured here rather than assumed,
-// so a change in how often the manager polls cannot silently halve it - which keeps the original
-// logic running on every call, bits and all, at console timing.
+// +0x1D9 = 3). The pad manager sub_001929B0 polls every pad twice per frame (its two vtbl+0x54
+// loops, both through sub_00192170, whose only call to here is at 0x1921A5), so on the console
+// that is 120 calls a second per pad: repeat after 10/120 s, then every 3/120 s. Tied to calls,
+// a 144 fps game repeats 2.4x too fast on the one widget that reads the repeat word
+// (sub_0012E840's only consumer, sub_0012F2D0 mode 4). The counts are rescaled by this machine's
+// call rate, which is 2 per frame - 2/(120 * frame dt) - so the original logic runs on every
+// call, bits and all, at console timing. (An earlier version of this wrapper smoothed the gaps
+// between all 8 calls a frame, which clustered back-to-back and made it 4-6x too slow instead.)
 X86_FUNC(__imp__sub_0018D6D0);
 X86_FUNC(sub_0018D6D0) {
-    using clock = std::chrono::steady_clock;
-    static clock::time_point last = clock::now();
-    static double interval = 1.0 / 120.0;  // seconds between calls, smoothed
-    const clock::time_point now = clock::now();
-    const double gap = std::chrono::duration<double>(now - last).count();
-    last = now;
-    if (gap > 0.0 && gap < 0.25) interval = interval * 0.9 + gap * 0.1;
-    const double calls_per_tick = 1.0 / (120.0 * interval);  // 1.0 at the console's 120 calls a second
+    const double calls_per_tick = 1.0 / (60.0 * g_dt.load(std::memory_order_relaxed));
     const uint32_t pad = ctx.eax;
     X86_MEM8(pad + 0x1D8u) = uint8_t(std::clamp(int(10.0 * calls_per_tick + 0.5), 1, 255));
     X86_MEM8(pad + 0x1D9u) = uint8_t(std::clamp(int(3.0 * calls_per_tick + 0.5), 1, 255));
     __imp__sub_0018D6D0(ctx, base);
+}
+
+// The menu held-repeat throttle, sub_0001D530(pad, direction), gated from the UI router
+// sub_0001D630's held branch (calls at 0x1D630's 6390/6421/6452/6483 recompiled lines; the router
+// posts the navigation event only when this returns 1). This is the repeat the player feels in
+// every menu and on the Create-an-Urb name keyboard, which moves one cell per router event and
+// has no timing of its own.
+//
+// It looks time-based but is not. It advances a global [0x378B60] by the honest clock delta at
+// [0x358494], then adds `int([0x378B60] * 30)` - the *cumulative* tick count, clamped to 4 - into
+// the direction's accumulator at [0x3584D8 + (pad*4+dir)*4], firing at the threshold in
+// [0x3584B8 + ...] (22, then -3 per fire, floor 12). Adding a cumulative count once per call makes
+// the rate quadratic in the call rate: simulated from the guest algorithm, about 8.8 repeats/s
+// at 60 fps, 15.8/s at 144, 27.8/s at 240.
+//
+// So the host runs it at console cadence: per (pad, direction) the real frame delta is
+// accumulated, and the original only runs once per 1/60 s, with [0x358494] - whose only reader
+// in the image is this function - pinned to exactly 1/60 for that call and restored after. The
+// guest logic then sees precisely what it saw on the console, at any frame rate. Skipped calls
+// return 0 ("do not post") and pop the function's two stack arguments (ret 8).
+X86_FUNC(__imp__sub_0001D530);
+X86_FUNC(sub_0001D530) {
+    static double pending[16] = {};  // one accumulator per (pad, direction)
+    const uint32_t key = (X86_MEM32(ctx.esp + 0x4u) & 3u) * 4u + (X86_MEM32(ctx.esp + 0x8u) & 3u);
+    pending[key] += g_dt.load(std::memory_order_relaxed);
+    if (pending[key] < 1.0 / 60.0) {
+        ctx.eax = 0;
+        ctx.esp += 12;  // ret 8
+        return;
+    }
+    pending[key] -= 1.0 / 60.0;
+    const float delta = X86_MEMF32(0x358494u);
+    X86_MEMF32(0x358494u) = float(1.0 / 60.0);
+    __imp__sub_0001D530(ctx, base);
+    X86_MEMF32(0x358494u) = delta;
 }
 
 // The idle auto-return, sub_0001F0E0(camera in ESI, one stack dword at [esp+4], ret 4). After two

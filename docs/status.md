@@ -535,3 +535,47 @@ not at a guest address. The log's last activity is a burst of fresh vertex-shade
 implausible rate now runs the original untouched instead of writing into guest memory), but the
 dump's fault address is in the driver, not at anything that wrapper writes. If it recurs, keep
 the .dmp and the matching log; the pair is what a driver-side triage needs.
+
+## The level-load crash, and what it cost
+
+Recorded 2026-10-16. The owner's game died every time at the Create-an-Urb to city transition.
+Five minidumps in `out/build/release/CrashDumps/`, all the same fault: `nvwgf2umx.dll+0x341259`
+(NVIDIA's D3D12 user mode driver), access violation reading `0x28`, on a **driver owned thread**
+whose stack carries no frame of ours, during the burst of brand new shaders the city load makes.
+No `exception` line appears in any of the logs, because the host's handler logs guest thread
+faults with guest registers - this was never guest code.
+
+Each suspect was killed by a run, not by argument:
+
+| Suspect | Killed by |
+| --- | --- |
+| Shader content | the same handles compiled fine in runs that reached the city (urbz_010, urbz_014) |
+| Stale disk cache | crash 1 ran with `0 shaders, 0 pipeline blobs` |
+| Concurrent `CreateGraphicsPipelineState` | serialised behind a mutex, crash 3 |
+| Anisotropic filtering (the only setting that split the matrix) | aniso 0, crash 4 |
+| Sampler heap wrap (`Submit(true)` mid draw) | instrumented with a warning; it never fired |
+| vsync, the tearing/direct-flip present path | vsync on, crash 5 |
+| Every per-call guest wrapper (`sub_0001FC20`, `sub_0018D6D0`, `sub_0001D530`, `sub_0001F0E0`, `sub_00173300`, `sub_0001F320`) | all disabled together through the new `URBZ_NO_*` switches, still crashed |
+
+That left one delta between the owner's last good session and the crashing builds: the SDK
+renderer rework (`04bea96`, "cut the city frame"). Reverting its six source files to `5bbdb3d`
+while keeping the same `-O2` host build stopped the crash - the owner played through the
+transition and into a district. The revert is `sdk` commit `15dcf87`.
+
+The defect is still inside that diff. The standing suspect is the deferred-draw path
+(`Defer`/`Pending`/`RunPending`/`RecordDeferred`): a parked draw holds GPU descriptor handles
+(`dc.samplers`, `dc.views`) and upload-ring offsets, and a mid-frame `Submit(true)` resets the
+ring (`f.used = 0`), the SRV counter (`f.srv = 0`) and the allocators before it is replayed.
+That reads as garbage descriptors or vertex data to the GPU, which is the shape of a null
+dereference on a driver thread. Frame rate correlated loosely (144 crashed, 60 survived), which
+fits shorter frames leaving more pipelines unfinished and more draws parked.
+
+What the revert costs until it is re-landed: the shader disk cache and compile worker pool (so
+first sight of an effect compiles inline, and nothing is cached between runs), dirty-tracked
+`SendState`, and the per-draw reuse fast paths. The same section's profile says the city is
+title-thread bound and the critical-path win was the `-O0` to `-O2` flag, which stays in
+`sdk/cmake/XbeRecomp.cmake`; the owner reports good frame rate in a district on this build.
+
+Switches added while bisecting, kept because they make the next one cheaper: every frame-rate
+wrapper in `src/game/hooks.cpp` can be turned off for a run - `URBZ_NO_STEP`, `URBZ_NO_ZOOM`,
+`URBZ_NO_REPEAT`, `URBZ_NO_UIGATE`, `URBZ_NO_IDLECAM`, `URBZ_NO_BINDINGS`, `URBZ_NO_SHOTCAM`.

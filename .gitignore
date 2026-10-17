@@ -35,3 +35,4 @@ settings.toml
 
 # Local temporary folder
 .local
+__pycache__/

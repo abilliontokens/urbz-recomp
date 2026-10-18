@@ -362,6 +362,13 @@ Three findings decided everything that followed:
   first, then mark), the mask is 12 atomic words taken with `exchange(0)`, and only marked pieces
   are compared and sent. `XBE_NO_STATE_DIRTY=1` restores the full comparison;
   `XBE_STATE_VERIFY=1` runs both and logs any piece that changed without a mark, naming the field.
+  *(Note, 2026-10-18: the `XBE_NO_DRAW_REUSE`, `XBE_SHADER_THREADS` and `XBE_NO_SHADER_CACHE`
+  switches described here were removed with the renderer rework in sdk commit `15dcf87` and no
+  longer exist in the build; the measurements below are historical. The title-thread state marks,
+  with `XBE_NO_STATE_DIRTY` and `XBE_STATE_VERIFY`, came back the same day on their own: without
+  the deferred-state gate (the deferred states are compared on every draw, so none is ever a frame
+  stale), with every write to the title's `gpu::State` forced through a marking helper, and with the
+  verifier naming byte offsets rather than fields.)*
 - **Per-draw redundancy in the D3D12 backend** (`runtime/gpu/d3d12.cpp`): descriptor tables,
   samplers, texture stages, shader/pipeline keys and constant uploads are reused when a byte-exact
   compare says nothing changed; the second `BindTargets` and the depth-copy probe are gated; the
@@ -645,3 +652,45 @@ and the bottom-right queue plates are gone, and NPC dialogue renders in the mode
 game's own colour spans. Placement is measured, not guessed: the title letterboxes its picture
 (rows 0-65 and 2108-2159 are black at 3840x2160), and the original HUD's last row sat at 0.894 of
 the output height, which is where the modern one sits.
+
+## Console cheats
+
+Recorded 2026-10-18. The F1 panel's **Cheats** section enters the game's own pad codes the game's own
+way (`src/game/cheats.cpp`, `src/common/cheats.h`). Built, not yet verified in play.
+
+- **Recogniser.** `sub_126A0`, called at the top of the per-frame update `sub_11E00`, keeps the last
+  six single-button presses (each within a second of the last) and matches them against a 12-row table
+  that `sub_4A300` writes at `0x35A86E` (rows 12 bytes apart, up to six masks each, in the game's pad
+  layout from `sub_1923A0`). The table is built in code, which is why no byte search of the XBE finds
+  the sequences. A match calls `sub_4A280(eax = 0x35A868, ecx = row)`: it flips bit `row` of the word
+  at `0x35A916` and plays the cheat-on or cheat-off sound; row 11 only plays a sound. The front end's
+  state entry `sub_A87F0` clears the word.
+- **Effect.** The word's only reader is the SimAntics global getter `sub_116200` (global 46). The
+  cheat gnome (`zz_move_a__tron` in `DATA/edithtre.arc`) appears while flag 1, 2 or 3 is set and
+  offers one pie-menu entry per set flag (Edith flags count from 1: flag n+1 is row n).
+- **Host entry.** The override of `sub_11E00` makes the `sub_4A280` call for each code the panel
+  queued, on the title thread, ahead of the game's own recogniser - only while the flow
+  (`[[SIMS system]+0x88]`, request `+0x84` and current `+0x88`) is 4, "ingame", and a lot's
+  SimAntics globals exist. `kGetCheatCode` (primitive 53, `sub_F1CB0`, reading `0x35AB40`) has no
+  writer in this build and nothing in the trees calls it.
+- **Team photo.** The credits movie's `on_input` (`tsc3_credits.apt`) opens the development team's
+  photo after DPAD_UP DPAD_DOWN SELECT DPAD_UP DPAD_DOWN SELECT; native code posts SELECT for action 5,
+  the A button (`sub_1D630`). The panel feeds those six presses to port 0 through `PadHook`, 130 ms
+  down and 130 ms up, only while the flow is 19 (Credits), and stops if the credits close.
+
+| Row | Xbox sequence | Gnome menu entry |
+| --- | --- | --- |
+| 0 | Left Y Down A X | (Get Shorty: the gnome appears) |
+| 1 | White B R L Black | Give Sim Money |
+| 2 | R L Down Black Left B | Fill All Motives |
+| 3 | L Black Right X Left | Skill Objects |
+| 4 | R Left B Down White | Unlock All Districts |
+| 5 | Black Up Y Down R | Unlock All Socials |
+| 6 | Black Down R L Down Y | Jump Ahead 6 Hours |
+| 7 | L R A Down Black | Max Physical Skill |
+| 8 | L B A Black Down Y | Max Mental Skill |
+| 9 | Y Down Black A B | Max Artistic Skill |
+| 10 | Down Black Right X Left | Give All Powersocial Items |
+| 11 | L R R L Right | none: plays a sound only |
+
+The panel offers rows 0, 2, 3, 5, 7, 8, 9 and 10 and the team photo, the cheats IGN's list names.

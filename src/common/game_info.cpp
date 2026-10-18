@@ -4,6 +4,7 @@
 #include <cstring>
 
  #include "app/app.h"
+#include "common/cheats.h"
 #include "common/hud.h"
 #include "common/input_kbm.h"
 #include "common/overlay.h"
@@ -137,11 +138,13 @@ void AutostartPad(int port, input::Pad& pad) {
     }
 }
 
-// every polled pad: the scripted self-test first, then the keyboard and mouse (input_kbm.cpp).
-// Both only ever add to what a real controller reported.
+// every polled pad: the scripted self-test first, then the keyboard and mouse (input_kbm.cpp), then
+// the team photo cheat's presses (cheats.cpp). All of them only ever add to what a real controller
+// reported.
 void PadHook(int port, input::Pad& pad) {
     AutostartPad(port, pad);
     kbm::Apply(port, pad);
+    cheats::Pad(port, pad);
 }
 
 }  // namespace

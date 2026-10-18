@@ -22,7 +22,8 @@ You need Windows 10/11 x64 and a Direct3D 12 GPU. Play it with a controller (Xbo
 Switch pads all work, through SDL) or with the keyboard and mouse - see **Controls** below. The first
 run writes `settings.toml`, `logs\` and `hdd\` (where saves go) beside the exe. In game, **F1** opens
 settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, render scale,
-anisotropic filtering) and **F2** the frame-time graph.
+anisotropic filtering, the modern HUD) and the game's own console cheats, which are off until ticked
+and never saved, and **F2** the frame-time graph.
 
 Any frame rate runs the game at its real speed, including uncapped on a high-refresh display. The
 engine quantised its frame step to whole 60ths of a second, which made it run 2.4x fast at 144 fps;
@@ -37,10 +38,17 @@ compilation: compiles run on worker threads and are cached in `shadercache\` bes
 district that cost 452 ms in a single frame now costs none once that cache is warm. The measured
 before/after, the 2x2 against the compiler flag and the verification are in `docs/status.md`.
 
-Diagnostics, if a scene ever looks wrong: `XBE_NO_DRAW_REUSE=1` turns off the renderer's per-draw
-reuse, `XBE_NO_STATE_DIRTY=1` the recorder's dirty-state fast path, `XBE_SHADER_THREADS=0` the
-compile workers, `XBE_NO_SHADER_CACHE=1` the on-disk cache, and `XBE_STATE_VERIFY=1` cross-checks
-the state fast path against a full comparison and logs anything it misses.
+Diagnostics: `XBE_PERF=1` logs frame timing, `XBE_CAPTURE_DIR=<folder>` enables the F3 frame
+capture, `XBE_CAPTURE_PROBE=<x>,<y>` (fractions of the picture, e.g. `0.85,0.45`) makes that capture
+name every clear and draw that changed the pixel there or reached it, `XBE_D3D12_DEBUG=1` the
+Direct3D 12 debug layer, and `XBE_BIND_SCALE`/`XBE_BIND_LOG` tune and trace the input binding
+scale. `XBE_MUTE=1` starts the game with audio silenced.
+`XBE_STATE_VERIFY=1` logs any draw state that changed without being marked for the render thread,
+and `XBE_NO_STATE_DIRTY=1` compares all of it on every draw instead of the marked part. The
+`URBZ_*` environment variables (`URBZ_NO_STEP`, `URBZ_NO_ZOOM`, `URBZ_NO_REPEAT`, `URBZ_NO_UIGATE`,
+`URBZ_NO_IDLECAM`, `URBZ_NO_BINDINGS`, `URBZ_NO_SHOTCAM`, `URBZ_AUTOSTART`, `URBZ_STEP`, set in
+`src/game/hooks.cpp` and `src/common/game_info.cpp`) disable individual frame-rate and input fixes
+for testing.
 
 If it says the game is missing, the `assets` folder has no image or extracted `default.xbe` in it.
 The exe only runs the XBE it was recompiled from - SHA-1 `5712b6a3...`, USA retail; any other build

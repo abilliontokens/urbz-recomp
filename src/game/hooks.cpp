@@ -284,3 +284,100 @@ X86_FUNC(sub_0001F320) {
     __imp__sub_0001F320(ctx, base);
     X86_MEMF32(0x2E4DA4u) = step;
 }
+
+// URBZ_UNLOCK_DISTRICTS=1: every city district is offered on the subway, so a district the save has
+// not reached yet can be visited and measured. Unset (the default) the live update runs untouched.
+//
+// Where a district's "open" bit lives. The player family (class 0x2C5A88, built by sub_10B1B0)
+// returns its progression flags from vfunc +0x90 (sub_10B1A0: `lea eax, [ecx+18FCh]`): an object
+// with vtable 0x2C34D0 holding 39 int16 words from +4 (GetWord sub_BC9A0, SetWord sub_BC9B0),
+// serialised into SaveGame with the family (sub_10B370 -> flags vfunc +0x18).
+// - The subway: "Take Subway" runs transition_sg's SG_I_LeavePlayer; its check tree
+//   SG_I_LeavePlayer_TEST (edithtre.arc) walks locations 1..12 and lists each one, except the
+//   current, that global tree 0x105 "GL_Is Location Unlocked for Me?" accepts. That tree tests
+//   `flags word 18, flag param0` through operand scope 0x28 (player 1's family flags, resolved at
+//   0xF602A: GetFamily([0x35AB10])->vfunc+0x90->GetWord(18)), and Edith flags are 1-based
+//   (Expression op 8, sub_F4740: `x & (1 << (n - 1))`), so location n is bit n-1 of word 18.
+// - The game's own reward sets the same bits: "Do District Reward" (unlock_system_sg) runs the
+//   unlock primitive (opcode 56, sub_F2230) on Respect goal 44+n, "Hidden - <district>" in the
+//   urbzui HouseData table, whose goal bit is n in word 0 (the bit the Goals screen reads,
+//   GOL_lot_unlock via sub_13D810); setting it cascades reward type 3, index n, into word 18
+//   bit n (sub_F1EF0 case 3).
+// Locations 1..9 are Neon East, Cozmo Street, Diamond Heights, South Side Bridge, 125th Street,
+// Gasoline Row, Central Station, Kicktail Park, The Foundry (global BCON 0x116 "Locations - Index";
+// the same order as the cam_intro table at 0x2E1C34 and housepre%02d), so the host ORs 0x1FF into
+// words 0 and 18: exactly what that primitive leaves behind for the nine districts.
+//
+// The hook site, sub_000988B0, is the per-frame update the play states share (controller states
+// 0x0A, 0x0E, 0x10, 0x13 and 0x2E from sub_AA260; their updates sub_A5EC0, sub_9A330, sub_ABEE0
+// and sub_9ED70 call it first), on the game thread, so no guest code is touching the flags; the
+// check is idempotent and logs only when it changes something, which also covers a save loaded
+// later in the session. The flags are save state: a SaveGame written afterwards keeps the
+// districts open, so run this against a copy of hdd\.
+namespace {
+void UnlockDistricts(uint8_t* base) {
+    constexpr uint16_t kDistricts = 0x1FF;  // locations 1..9, bits 0..8
+    const uint32_t hood = X86_MEM32(0x2EDF48u);  // the neighborhood, set by sub_BC620
+    if (!hood) return;
+    // its families, the vector GetFamily (sub_CA4C0) walks
+    const uint32_t first = X86_MEM32(hood + 0x1B8u), last = X86_MEM32(hood + 0x1BCu);
+    if (last < first || last - first > 0x400u || (last - first) % 4u) return;
+    for (uint32_t player = 0; player < 2; player++) {
+        const uint32_t id = X86_MEM32(0x35AB10u + 4u * player);  // [0x35AB10] player 1, [0x35AB14] player 2
+        if (!id) continue;
+        uint32_t flags = 0;
+        for (uint32_t it = first; it != last && !flags; it += 4u) {
+            const uint32_t family = X86_MEM32(it);
+            // the player family class, its id (vfunc +0x40, sub_E8860: [ecx+8]) and its flags object
+            if (family && X86_MEM32(family) == 0x2C5A88u && X86_MEM32(family + 0x8u) == id &&
+                X86_MEM32(family + 0x18FCu) == 0x2C34D0u)
+                flags = family + 0x18FCu;
+        }
+        if (!flags) {
+            static bool warned = false;
+            if (player == 0 && !warned) {
+                warned = true;
+                LOGW("districts: player 1 family %u has no progression flags, nothing unlocked", id);
+            }
+            continue;
+        }
+        const uint16_t goals = X86_MEM16(flags + 0x4u), places = X86_MEM16(flags + 0x28u);  // words 0, 18
+        if ((goals & kDistricts) == kDistricts && (places & kDistricts) == kDistricts) continue;
+        X86_MEM16(flags + 0x4u) = uint16_t(goals | kDistricts);
+        X86_MEM16(flags + 0x28u) = uint16_t(places | kDistricts);
+        LOGI("districts: URBZ_UNLOCK_DISTRICTS opened locations 1-9 for player %u (family %u): goal word 0 "
+             "%04X -> %04X, location word 18 %04X -> %04X",
+             player + 1, id, unsigned(goals), unsigned(goals | kDistricts), unsigned(places),
+             unsigned(places | kDistricts));
+    }
+}
+
+// Which lot is loaded, so a run can prove where it ended up: the load state stores [0x35AB28] - 1
+// at [[0x3586FC] + 0x24] (sub_9C300 case 2), and sub_9E8A0 indexes the cam_intro name table at
+// 0x2E1C34 with it (2 = cam_intro_diamond_heights).
+void LogLot(uint8_t* base) {
+    static uint32_t last = ~0u;
+    const uint32_t lots = X86_MEM32(0x3586FCu);
+    if (!lots) return;
+    const uint32_t lot = X86_MEM32(lots + 0x24u);
+    if (lot == last || lot >= 12u) return;
+    last = lot;
+    const uint32_t name = X86_MEM32(0x2E1C34u + 4u * lot);
+    LOGI("districts: in lot %u (%s)", lot + 1, name ? reinterpret_cast<const char*>(base + name) : "?");
+}
+}  // namespace
+
+X86_FUNC(__imp__sub_000988B0);
+X86_FUNC(sub_000988B0) {
+    static const bool unlock = [] {
+        const char* s = std::getenv("URBZ_UNLOCK_DISTRICTS");
+        const bool on = s && s[0] && std::strcmp(s, "0") != 0;
+        if (on) LOGI("districts: URBZ_UNLOCK_DISTRICTS set, opening the nine districts on the subway");
+        return on;
+    }();
+    if (unlock) {
+        UnlockDistricts(base);
+        LogLot(base);
+    }
+    __imp__sub_000988B0(ctx, base);
+}

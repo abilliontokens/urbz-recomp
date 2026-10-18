@@ -4,6 +4,7 @@
 // trust that a context, a window size or a pad exists.
 #include "common/overlay.h"
 
+#include "common/cheats.h"
 #include "common/hud.h"
 
 #include <algorithm>
@@ -394,6 +395,49 @@ void DrawQuality() {
     Note("Forced only where the game already filters across mip levels.");
 }
 
+// The game's own console cheats (common/cheats.h). Each one is entered the way its pad code is, so
+// a checkbox is the game's own state of that code and what follows is the game's: the cheat gnome
+// appears, and its menu offers every other code that is on.
+struct CheatRow {
+    cheats::Code code;
+    const char* label;
+    const char* note;
+};
+constexpr CheatRow kCheatRows[] = {
+    {cheats::kGnome, "Cheat gnome",
+     "Get Shorty: the cheat gnome appears in the city. The ones below are picked from its menu."},
+    {cheats::kSocials, "Unlock all socials",
+     "Adds Unlock All Socials to the gnome: every social move becomes available."},
+    {cheats::kSkillObjects, "Acquire skill",
+     "Adds Skill Objects to the gnome: the skill objects go into the inventory."},
+    {cheats::kFillMotives, "Fill all motives", "Adds Fill All Motives to the gnome: all six motives full."},
+    {cheats::kMaxPhysical, "Max physical", "Adds Max Physical Skill to the gnome."},
+    {cheats::kMaxMental, "Max mental", "Adds Max Mental Skill to the gnome."},
+    {cheats::kMaxArtistic, "Max artistic", "Adds Max Artistic Skill to the gnome."},
+    {cheats::kPowerSocials, "Power social", "Adds Give All Powersocial Items to the gnome."},
+};
+
+void DrawCheats(bool city) {
+    // a click only queues the code: the title thread enters it at the top of its next frame
+    ImGui::BeginDisabled(!city);
+    for (const CheatRow& r : kCheatRows) {
+        Row(r.label);
+        bool on = cheats::On(r.code);
+        ImGui::PushID(int(r.code));
+        if (ImGui::Checkbox("##cheat", &on)) cheats::Toggle(r.code);
+        ImGui::PopID();
+        Note(r.note);
+    }
+    ImGui::EndDisabled();
+
+    Row("Team photo");
+    ImGui::BeginDisabled(!cheats::InCredits() || cheats::TeamPhotoRunning());
+    if (ImGui::Button("Show##teamphoto")) cheats::TeamPhoto();
+    ImGui::EndDisabled();
+    Note("On the Credits screen: presses Up, Down, A, Up, Down, A, and the credits show the development "
+         "team's photo.");
+}
+
 void DrawSettings() {
     const ImGuiIO& io = ImGui::GetIO();
     // centred, auto fitting its height, and resizable once it is up
@@ -428,6 +472,16 @@ void DrawSettings() {
         ImGui::Checkbox("##modernhud", &hud::g_enabled);
         Note("Draws the reputation, clock, mood and motives as vectors at the output's own "
              "resolution. Off gives the game's original 640x480 HUD back.");
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Cheats");
+    const bool city = cheats::InCity();
+    Note(city ? "The game's own pad codes, entered as if typed on the pad. Each click turns one on or off; "
+                "the game clears them at the main menu and none is saved."
+              : "Codes go in only in the city with the HUD up: not on a menu, the pause screen, a loading "
+                "screen or in Create-an-Urb.");
+    if (BeginRows("##cheat_rows", label_width)) {
+        DrawCheats(city);
         ImGui::EndTable();
     }
 

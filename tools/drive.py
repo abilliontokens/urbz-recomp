@@ -50,17 +50,34 @@ def kill():
     time.sleep(2)
 
 
+def _game_pids():
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Urbz.exe", "/FO", "CSV", "/NH"],
+                         capture_output=True, text=True).stdout
+    pids = set()
+    for ln in out.splitlines():
+        parts = [p.strip('"') for p in ln.split('","')]
+        if len(parts) > 1 and parts[1].isdigit():
+            pids.add(int(parts[1]))
+    return pids
+
+
 def window():
-    """Top-level window of the running game, or 0."""
+    """Top-level window of the running game, or 0.
+
+    Matched by owning process (Urbz.exe PID), never by title: a terminal
+    tab titled "...Urbz..." otherwise wins the title match and every
+    focus/key/capture silently targets the wrong window.
+    """
+    pids = _game_pids()
+    if not pids:
+        return 0
     found = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def each(hwnd, _):
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        buf = ctypes.create_unicode_buffer(256)
-        user32.GetWindowTextW(hwnd, buf, 256)
-        if user32.IsWindowVisible(hwnd) and "Urbz" in buf.value:
+        if pid.value in pids and user32.IsWindowVisible(hwnd):
             found.append(hwnd)
         return True
 

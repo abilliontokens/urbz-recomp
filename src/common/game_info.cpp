@@ -167,4 +167,11 @@ const app::GameInfo app::kGame = {
     .ui = &overlay::Draw,                    // ImGui drawing each frame: F1 settings, F2 performance
     .pad = &PadHook,                         // keyboard and mouse as port 0, URBZ_AUTOSTART self-test
     .rumble = nullptr,                       // changes a rumble before it is set
+    // The game draws 640x448 inside its 640x480 frame: its own 2D screen matrix is 640 by 448 with
+    // a 16-row y offset in every captured draw (sdk/runtime/xdk/d3d8.cpp), the intro movie is
+    // 640x448, and a 1920x1080 window measured exactly 36 black rows (16 guest rows) at the top and
+    // the bottom. A TV overscanned those away; a window shows them, so the host presents rows
+    // 16 to 463 and nothing else.
+    .picture_top = 16,
+    .picture_height = 448,
 };

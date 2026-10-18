@@ -31,13 +31,13 @@ constexpr float kMargin = 28.0f;
 constexpr float kBarW = 132.0f, kBarH = 12.0f, kBarGap = 16.0f, kIcon = 26.0f;
 constexpr float kDial = 58.0f;  // mood dial radius
 
-// The title letterboxes its own picture: measured on a 3840x2160 frame, rows 0-65 and 2108-2159
-// are exactly black, so 3.06% of the output's height at the top and 2.41% at the bottom are the
-// game's own bars, not picture. Anchoring to the window put the motive bars half inside the
-// bottom bar. The game's own HUD ended at 0.894 of the output height, measured from a frame that
-// still had it, and the modern one sits on that same floor so the eye does not have to move.
-constexpr float kBandTop = 0.0306f;
-constexpr float kLegacyFloor = 0.894f;
+// The game draws 640x448 inside its 640x480 frame and the host now presents those rows alone
+// (app::GameInfo::picture_top/height), so the window is all picture and the HUD starts at its very
+// top. The game's own HUD ended at 0.894 of the uncropped output height; over the cropped picture
+// that row is (0.894 * 480 - 16) / 448 = 0.922, and the modern HUD sits on that same floor so the
+// eye does not have to move between the two styles.
+constexpr float kBandTop = 0.0f;
+constexpr float kLegacyFloor = 0.922f;
 
 ImU32 Rgba(float r, float g, float b, float a) { return ImGui::GetColorU32(ImVec4(r, g, b, a)); }
 

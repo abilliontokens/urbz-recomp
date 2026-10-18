@@ -39,10 +39,12 @@ district that cost 452 ms in a single frame now costs none once that cache is wa
 before/after, the 2x2 against the compiler flag and the verification are in `docs/status.md`.
 
 Diagnostics: `XBE_PERF=1` logs frame timing, `XBE_CAPTURE_DIR=<folder>` enables the F3 frame
-capture, `XBE_CAPTURE_PROBE=<x>,<y>` (fractions of the picture, e.g. `0.85,0.45`) makes that capture
-name every clear and draw that changed the pixel there or reached it, `XBE_D3D12_DEBUG=1` the
-Direct3D 12 debug layer, and `XBE_BIND_SCALE`/`XBE_BIND_LOG` tune and trace the input binding
-scale. `XBE_MUTE=1` starts the game with audio silenced.
+capture (its `frame.txt` also lists each texture it dumps as `tex_<address>.bmp` as guest memory
+held it: how many of its levels are all zero and how it begins, so a black dump tells a texture the
+game left zero from one decoded wrong), `XBE_CAPTURE_PROBE=<x>,<y>` (fractions of the picture, e.g.
+`0.85,0.45`) makes that capture name every clear and draw that changed the pixel there or reached
+it, `XBE_D3D12_DEBUG=1` the Direct3D 12 debug layer, and `XBE_BIND_SCALE`/`XBE_BIND_LOG` tune and
+trace the input binding scale. `XBE_MUTE=1` starts the game with audio silenced.
 `XBE_STATE_VERIFY=1` logs any draw state that changed without being marked for the render thread,
 and `XBE_NO_STATE_DIRTY=1` compares all of it on every draw instead of the marked part. The
 `URBZ_*` environment variables (`URBZ_NO_STEP`, `URBZ_NO_ZOOM`, `URBZ_NO_REPEAT`, `URBZ_NO_UIGATE`,

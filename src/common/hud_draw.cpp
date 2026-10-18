@@ -5,9 +5,9 @@
 // ImGui draw-list primitives at the output's own resolution and scaled from it, so it is sharp at
 // any size; nothing is sampled from a texture.
 //
-// Layout follows the original so the player's eye does not have to move: reputation level, the bar
-// to the next level and the clock along the top left; the mood dial and the five motive bars along
-// the bottom left, in the game's order - bladder, hygiene, hunger, fun, energy.
+// Layout follows the original so the player's eye does not have to move: the reputation number,
+// the bar toward the next unlock and the clock along the top left; the mood dial and the five
+// motive bars along the bottom left, in the game's order - bladder, hygiene, hunger, fun, energy.
 //
 // This file is only the drawing. The values come from hud::Read (hud_state.cpp), the setting from
 // hud::g_enabled, and the call from overlay.cpp inside the ImGui frame.

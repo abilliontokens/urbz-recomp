@@ -1,40 +1,35 @@
 // The modern HUD's two halves that only make sense for this image: reading what the game's own HUD
 // shows out of guest memory, and keeping the game from drawing the parts the host replaces.
 //
-// Values. The HUD's own cache object ("HUDData", 0x978 bytes) hangs off [0x35A740]; the game fills
-// it on the title thread once a frame and the Apt movie reads it through HUD_bar{i}/HUD_rep. The
-// host reads the same cache:
+// Values. The HUD's cache object ("HUDData", 0x978 bytes) is *[0x35A740]. The game deletes it on
+// Create-an-Urb, quit-to-menu and HUD_transition (sub_AC080, sub_AC270, sub_992E0, sub_992A0) and
+// zeroes that pointer straight after, so the host reads the pointer afresh every time and keeps no
+// copy of it:
 //
 //   H = *[0x35A740], player p = [H+0xF9] & 1
 //   H + 0xA8 + 6p + 0..4  five motive percents, 0..100, in the order the HUD draws them
 //                         (bladder, hygiene, hunger, fun, energy - Sim attributes 9, 8, 7, 15, 5)
 //   H + 0xA8 + 6p + 5     mood percent, 0..100, a weighted average of the five
-//   H + 0x96C/0x970/0x974 + 2p   reputation bar base, current and next unlock, int16
+//   H + 0x96C/0x970/0x974 + 2p   reputation bar base, current and next unlock, int16 (see Read)
+//   H + 0xE5, H + 0xE6    whether the HUD movie exists and what its show/hide is doing (HudUp)
+//   H + 0xFC              player one's action queue controller, built by sub_12FF00(H, H + 0xFC)
 //   G = *[0x2EDF60]; int16 [G+0x14] hour 0..23, int16 [G+0x1E] minute 0..59
 //
 // The percent bytes are deliberate: two writers use the raw int16 twin at H+0xB4 with different
 // scales (one stores the -100..100 motive, the other (value+100)/2), while the percent byte is
 // always 0..100 and is exactly what the movie is handed.
 //
-// Hiding. The game's HUD is the Apt movie `tsc3_ingame`, whose clips `hud0`/`hud1` hold both corner
-// groups *and* things the modern HUD does not replace - the interaction pie menu
-// (mc_actionQueue/mc_actionProto), simoleons, the ringtone and job icons - while NPC dialogue, the
-// lot name and modeless dialogs sit beside them on the `ingame` root. So neither the game's own
-// `hideHud` nor hiding hud0/hud1 wholesale is right: both take the pie menu with them.
-//
-// Instead the host skips exactly the corner clips in the Apt per-clip renderer `sub_002153B0`
-// (clip in ecx, three stack arguments, `ret 0x0C`). Its callers ignore its return value and the
-// transform stack is pushed and popped in the caller, so an early return is what the renderer
-// already does for a clip with the hidden bit 0x8000 set. The movie keeps running and keeps
-// refreshing the caches above - only the drawing is skipped.
+// The motive and reputation fields are caches the movie pulls. The HUD_bar{i} getter refreshes its
+// byte (sub_142430), and the HUD_rep and HUD_next_rep_unlock getters theirs (sub_142180,
+// sub_142200), only when the movie asks - and what asks is mc_meterClockPoll, a nine-frame loop in
+// the HUD whose frames call updateClock, updateMoney, updateRep and updateBar0..5 in turn. The
+// values are exactly as fresh as that clip is alive, which is one more reason the walk hook at the
+// bottom of this file must never stop it.
 #include <algorithm>
 #include <atomic>
-#include <cmath>
-#include <cstdio>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <mutex>
-#include <set>
-#include <string>
 
 #include "common/hud.h"
 #include "cpu/x86_ops.h"
@@ -43,22 +38,6 @@
 #include "kernel/memory.h"
 
 namespace {
-
-// the clips that make up the two corner groups the modern HUD draws; everything else in hud0/hud1
-// keeps drawing, which is what leaves the pie menu, the simoleons and the job icons alone
-bool CornerClip(const char* name) {
-    // every display object in the movie comes through here each frame, so reject on the prefix
-    // before any compare: every name below starts with "mc_"
-    if (name[0] != 'm' || name[1] != 'c' || name[2] != '_') return false;
-    static const char* const kNames[] = {
-        "mc_rep",        "mc_repstar", "mc_repTextDisplay", "mc_clockText", "mc_meterClockPoll",
-        "mc_meters",     "mc_mood",    "mc_meterbar0",      "mc_meterbar1", "mc_meterbar2",
-        "mc_meterbar3",  "mc_meterbar4",
-    };
-    for (const char* n : kNames)
-        if (!std::strcmp(name + 3, n + 3)) return true;
-    return false;
-}
 
 // What counts as a guest pointer. The address space is not one flat low region: the image and heap
 // sit in the user range, but every Apt display object the HUD is built from lives in the physical
@@ -84,65 +63,48 @@ bool GuestPtr(uint32_t va, uint32_t size = 1) {
     return true;
 }
 
+uint8_t R8(uint32_t va) { return *static_cast<const uint8_t*>(kernel::HostPtr(va)); }
 
-float Percent(uint32_t va) { return std::clamp(float(*static_cast<const uint8_t*>(kernel::HostPtr(va))) / 100.0f, 0.0f, 1.0f); }
+float Percent(uint32_t va) { return std::clamp(float(R8(va)) / 100.0f, 0.0f, 1.0f); }
 
-// The movie's own visibility bit: the display-list walk (sub_229760) renders a child only when
-// bit 0x8000 of [child+0x04] is set, and that bit is what ActionScript's _visible writes.
-constexpr uint32_t kVisibleBit = 0x8000u;
+constexpr uint32_t kHudDataPtr = 0x35A740u;
+constexpr uint32_t kHudDataSize = 0x978u;
 
-// hud0 itself, the container the status clips hang under. It is never hidden - the pie menu and
-// the lot name live under it too - but its own visibility is the game saying "my HUD is up".
-std::atomic<uint32_t> g_hud_container{0};
-
-// The action queue's controller, captured from its constructor (sub_12FF00, `this` in esi). It
-// owns the bottom-right panel: an array of queued actions at +168 with a 20 byte stride, how
-// many of them at +336, which one is running at +777, and the player it belongs to at +789.
-// The slots themselves are movie clips whose pictures the game renders, which is why the modern
-// strip redraws the queue rather than restyling it.
-std::atomic<uint32_t> g_queue_ctrl{0};
-
-// The queue's clips. The slot plates and arrows are hidden like the rest of the old HUD; the
-// picture clips are kept, because what the sim is about to do is drawn into them by the game and
-// the host has no way to redraw it.
-std::atomic<uint32_t> g_queue_clip{0};
-std::atomic<uint32_t> g_queue_icons[9];
-
-// The HUD object the game itself works on. sub_142430 refreshes a motive byte on it and
-// sub_141700 reads that byte straight back out, so the object passed to the refresh is the one
-// whose +0xA8 block holds live values - and it is not what *[0x35A740] points at, which is why
-// the motives read as zeroes while the game's own bars were full. Captured from the game's call
-// rather than guessed from a global.
-std::atomic<uint32_t> g_hud_data{0};
-
-uint32_t HudData() {
-    const uint32_t captured = g_hud_data.load(std::memory_order_relaxed);
-    return captured ? captured : kernel::R32(0x35A740u);
+// HUDData as the game holds it right now, or 0 when there is none
+uint32_t LiveHudData() {
+    const uint32_t h = kernel::R32(kHudDataPtr);
+    return GuestPtr(h, kHudDataSize) ? h : 0u;
 }
+
+// Whether the game is showing its own HUD. The movie runs that as a small state machine and
+// reports every step through the HUD variable setter sub_141170, which keeps it in HUDData:
+//   [H+0xE5]  1 from HUD_initialized to HUD_destroy; 0 while the HUD movie is gone, which it is
+//             behind the pause menu, the XAM and Create-an-Urb
+//   [H+0xE6]  HUD_state as tsc3_ingame's showHud/hideHud set it: 0 hidden, 3 showing, 2 shown,
+//             1 hiding
+// The game's own HUD controller (sub_1429C0) and its hideHud (sub_142520) read the same two bytes.
+// "Showing or shown" puts the modern HUD up as the old one starts coming in, and takes it down as
+// the old one starts going out for a cutscene, the pause menu or the phone.
+bool HudUp(uint32_t h) {
+    const uint8_t state = R8(h + 0xE6u);
+    return R8(h + 0xE5u) != 0 && (state == 2 || state == 3);
+}
+
+// The HUDData the movie last read through the game's own variable getter (sub_1416C0, `this` in
+// ecx). In every logged run it has been the object *[0x35A740] holds; the motive refresh writes
+// only when the two agree, which they do not between a delete and the movie's first read of the
+// object that replaces it.
+std::atomic<uint32_t> g_hud_data{0};
 
 }  // namespace
 
 namespace hud {
 
-// Whether the game is showing its own HUD right now. It hides it for cutscenes, the XAM, the
-// pause menu, Create-an-Urb and the way back to the main menu, and the modern HUD goes with it.
-//
-// This used to compare a frame counter bumped here against a stamp written by the render hook,
-// which starved the HUD: the two run at different rates, so the stamp read "stale" on almost
-// every frame and Read bailed out. The container's own visibility bit answers the same question
-// directly, with no clocks to drift - it is the bit the game's script writes, and the status
-// clips hidden underneath it are separate clips whose own bits are the ones cleared.
-bool GameHudVisible() {
-    const uint32_t container = g_hud_container.load(std::memory_order_relaxed);
-    return container != 0 && (kernel::R32(container + 0x4u) & kVisibleBit) != 0;
-}
-
 bool Read(State& out) {
-    if (!GameHudVisible()) return false;
-    const uint32_t h = HudData();
+    const uint32_t h = LiveHudData();
+    if (!h || !HudUp(h)) return false;  // no city yet, or the game's own HUD is not up
     LOG_FIRST(3, "hud: read, HUDData %08X, globals %08X", h, kernel::R32(0x2EDF60u));
-    if (!GuestPtr(h, 0x980)) return false;  // before the city is up there is no HUD data
-    const uint32_t p = *static_cast<const uint8_t*>(kernel::HostPtr(h + 0xF9u)) & 1u;
+    const uint32_t p = R8(h + 0xF9u) & 1u;
     const uint32_t m = h + 0xA8u + 6u * p;
     out.bladder = Percent(m + 0);
     out.hygiene = Percent(m + 1);
@@ -159,293 +121,88 @@ bool Read(State& out) {
         }
     }
 
-    // HUD_rep, the number in the game's own box, is the reputation itself: sub_142180 returns
-    // [H+0x970+2p] and the movie formats it straight into the box. The twin at +0x96C is the
-    // low-water mark that function keeps, and +0x974 the next unlock, which is what the bar
-    // beside the box fills towards.
+    // Reputation, as the movie's own meter (mc_rep, inside mc_meters) shows it:
+    //   +0x970  HUD_rep, the sim's reputation, copied out of the sim by sub_142180 each time the
+    //           movie asks; it also lowers +0x96C to it if it fell below
+    //   +0x96C  HUD_base_rep, the highest unlock threshold already reached (sub_142200)
+    //   +0x974  HUD_next_rep_unlock, the lowest one not yet reached, or 999 when none is left
+    //           (sub_142200; the meter asks when it starts and again on every level-up)
+    // The meter's calculate_target_frame shows frame 2 + round((cur - base) * 104 / (next - base)),
+    // clamped to its 2..106, so this fraction clamped to 0..1 is the same bar. Once sub_142200 has
+    // run, base <= cur < next; before it ever has, all three are zero and the bar is empty, as the
+    // meter's own is. A level-up writes the three in turn, so a frame can see a torn set: clamping
+    // covers that too.
     const int16_t base = int16_t(kernel::R16(h + 0x96Cu + 2u * p));
     const int16_t cur = int16_t(kernel::R16(h + 0x970u + 2u * p));
     const int16_t next = int16_t(kernel::R16(h + 0x974u + 2u * p));
-    // a level-up writes the three in turn, so a frame can see a torn set: clamping is enough
     out.progress = next > base ? std::clamp(float(cur - base) / float(next - base), 0.0f, 1.0f) : 0.0f;
     out.rep = std::clamp(int(cur), 0, 9999);
 
     const uint32_t g = kernel::R32(0x2EDF60u);
-    if (g >= 0x10000u) {
+    if (GuestPtr(g, 0x20)) {
         out.hour = std::clamp(int(int16_t(kernel::R16(g + 0x14u))), 0, 23);
         out.minute = std::clamp(int(int16_t(kernel::R16(g + 0x1Eu))), 0, 59);
     }
 
-    // the action queue, for the strip that replaces the game's bottom-right panel
-    const uint32_t q = g_queue_ctrl.load(std::memory_order_relaxed);
-    if (GuestPtr(q, 0x320)) {
-        const uint32_t count = kernel::R32(q + 336u);
-        out.queued = count <= 9u ? int(count) : 0;
-        const int active = int(*static_cast<const uint8_t*>(kernel::HostPtr(q + 777u)));
-        out.queue_active = active < out.queued ? active : -1;
-    }
+    // The action queue, for the strip that replaces the game's bottom-right panel. Player one's
+    // controller is part of HUDData itself: an array of queued actions at +168 with a 20 byte
+    // stride, how many of them at +336 and which one is running at +777. The slots are movie clips
+    // whose pictures the game renders, which is why the modern strip redraws the queue rather than
+    // restyling it.
+    const uint32_t q = h + 0xFCu;
+    const uint32_t count = kernel::R32(q + 336u);
+    out.queued = count <= 9u ? int(count) : 0;
+    const int active = int(R8(q + 777u));
+    out.queue_active = active < out.queued ? active : -1;
     return true;
 }
 
 }  // namespace hud
 
-// Identity, the game's own way. The renderer gets a display object with no name I could read
-// reliably - the first attempt at [obj+0x0C] matched nothing at all - but the game resolves its
-// HUD's parts by name itself, with sub_001FA850(parent, name, 0) returning the child in eax.
-// Hooking that gives the exact pointers the HUD is built from, so hiding needs no layout
-// guesswork. Every distinct name the game asks for is logged once.
-namespace {
-
-constexpr int kMaxClips = 32;
-std::atomic<uint32_t> g_hud_clips[kMaxClips];
-
-void RememberClip(uint32_t clip) {
-    for (int i = 0; i < kMaxClips; i++) {
-        uint32_t cur = g_hud_clips[i].load(std::memory_order_relaxed);
-        if (cur == clip) return;
-        if (cur == 0 && g_hud_clips[i].compare_exchange_strong(cur, clip, std::memory_order_relaxed)) return;
-    }
-}
-
-// The movie's own visibility bit. The display-list walk (sub_229760) renders a child only when
-// bit 0x8000 of [child+0x04] is set, chaining siblings through [child+0x58]; that bit is what
-// ActionScript's _visible writes. Clearing it for the legacy status clips makes the game skip
-// them and their whole subtree exactly as it skips anything the script hid, so nothing is drawn
-// and then covered up.
-//
-// The bit stays cleared. Clearing it only around the walk put the HUD straight back on screen:
-// the walk records the clips and the draw happens after it returns, so a bit restored at the end
-// of the walk is restored before anything reads it. Re-clearing every walk also covers the
-// script turning its clips back on when it animates the HUD in.
-void HideLegacyClips() {
-    for (int i = 0; i < kMaxClips; i++) {
-        const uint32_t clip = g_hud_clips[i].load(std::memory_order_relaxed);
-        if (clip == 0) break;
-        const uint32_t flags = kernel::R32(clip + 0x4u);
-        if (flags & kVisibleBit) kernel::W32(clip + 0x4u, flags & ~kVisibleBit);
-    }
-}
-
-// a guest C string, bounded
-bool GuestString(uint32_t va, char (&buf)[64]) {
-    if (!GuestPtr(va, sizeof buf)) return false;
-    const char* p = static_cast<const char*>(kernel::HostPtr(va));
-    for (size_t i = 0; i < sizeof buf; i++) {
-        const char c = p[i];
-        if (c == '\0') {
-            buf[i] = '\0';
-            return i > 0;
-        }
-        if (c < 0x20 || c > 0x7E) return false;
-        buf[i] = c;
-    }
-    return false;
-}
-
-void LogNameOnce(const char* name) {
-    static std::set<std::string> seen;
-    static std::mutex m;
-    std::lock_guard lock(m);
-    if (seen.size() > 400 || !seen.insert(name).second) return;
-    LOGI("hud: apt child \"%s\"", name);
-}
-
-}  // namespace
-
-
-X86_FUNC(__imp__sub_001FA850);
 X86_FUNC(__imp__sub_00229760);
 X86_FUNC(__imp__sub_00142430);
 X86_FUNC(__imp__sub_001416C0);
-X86_FUNC(__imp__sub_0012FF00);
 
-// The movie's own ActionScript binds HUD_bar{i} to its bars, so native code never resolves the
-// meters, mood, reputation or clock clips by name - the capture only ever saw the pie menu. The
-// same helper resolves any child by name though, so the host asks it for the HUD's own clips,
-// reusing a parent the game just used.
-//
-// The names are not guesses: they are the movie's own symbols, read out of DATA/flashes.arc, where
-// the HUD script does attachMovie("HUD", "hud0"), then touches mc_meters, mc_meters_job,
-// mc_actionProto and mc_actionQueue under it and sets mc_npcDialog._visible beside it. Each one
-// that resolves is logged with its pointer, so a name that is wrong here is visible, not silent.
-namespace {
-
-// The helper resolves ONE path segment per call: the game itself walks "ingame" -> "hud0" ->
-// "mc_actionProto" -> "mc_actionMenu", each from the previous result (seen in the log as four
-// separate lookups with the parent threading through). Whole-path probes therefore never matched
-// anything. The host walks the same way, from the root the game just used.
-//
-// Only the status read-outs are listed. The pie menu (mc_actionProto, mc_actionQueue) and the lot
-// name stay on screen: they are interaction, not status, and the modern HUD does not replace them.
-const char* const kLegacyHudClips[] = {
-    "mc_meters",   "mc_meters_job", "mc_simoleons",        "mc_rep",
-    "mc_repstar",  "mc_repTextDisplay", "mc_mood",         "mc_moodgreen",
-    "mc_faces",    "mc_faces_back", "mc_clockText",        "mc_meterClockPoll",
-    "mc_meterbar0", "mc_meterbar1", "mc_meterbar2",        "mc_meterbar3",
-    "mc_meterbar4", "mc_jobIcons",  "mc_ringtone",
-};
-
-uint32_t g_probe_strings = 0;
-std::atomic<bool> g_probed{false};
-
-// one guest call to the child-by-name helper, with our own arguments on the guest stack
-uint32_t ChildByName(X86Context& ctx, uint8_t* base, uint32_t parent, uint32_t name_va) {
-    const uint32_t esp = ctx.esp, eax = ctx.eax, ecx = ctx.ecx, edx = ctx.edx;
-    ctx.esp -= 16;
-    kernel::W32(ctx.esp + 0x0u, 0);  // return address, the body does not use it
-    kernel::W32(ctx.esp + 0x4u, parent);
-    kernel::W32(ctx.esp + 0x8u, name_va);
-    kernel::W32(ctx.esp + 0xCu, 0);
-    __imp__sub_001FA850(ctx, base);
-    const uint32_t child = ctx.eax;
-    ctx.esp = esp;
-    ctx.eax = eax;
-    ctx.ecx = ecx;
-    ctx.edx = edx;
-    return child;
-}
-
-uint32_t Segment(X86Context& ctx, uint8_t* base, uint32_t parent, const char* name) {
-    if (!GuestPtr(parent) || !g_probe_strings) return 0;
-    std::strncpy(static_cast<char*>(kernel::HostPtr(g_probe_strings)), name, 63);
-    return ChildByName(ctx, base, parent, g_probe_strings);
-}
-
-// Hide every status clip under one parent. The HUD movie is attached twice in two-player games
-// (hud0/hud1, each with a player_hud0 inside), so the same names are asked for under each parent
-// that exists rather than assuming one fixed depth.
-int HideStatusClips(X86Context& ctx, uint8_t* base, uint32_t parent, const char* what) {
-    int hidden = 0;
-    for (const char* n : kLegacyHudClips) {
-        const uint32_t clip = Segment(ctx, base, parent, n);
-        if (!GuestPtr(clip)) continue;
-        RememberClip(clip);
-        hidden++;
-        LOGI("hud: hiding %s/%s -> %08X", what, n, clip);
-    }
-    return hidden;
-}
-
-void ProbeHudClips(X86Context& ctx, uint8_t* base, uint32_t root) {
-    static std::atomic<int> tries{0};
-    if (g_probed.load(std::memory_order_relaxed)) return;
-    if (tries.fetch_add(1, std::memory_order_relaxed) > 60) return;
-    if (!g_probe_strings) g_probe_strings = mem::AllocSystem(64);
-    if (!g_probe_strings) return;
-
-    const uint32_t ingame = Segment(ctx, base, root, "ingame");
-    LOGI("hud: walk root %08X -> ingame %08X", root, ingame);
-    if (!GuestPtr(ingame)) return;
-
-    int hidden = 0;
-    for (const char* hud : {"hud0", "hud1"}) {
-        const uint32_t h = Segment(ctx, base, ingame, hud);
-        if (!GuestPtr(h)) continue;
-        g_hud_container.store(h, std::memory_order_relaxed);  // "the game's HUD is up" comes from this
-        hidden += HideStatusClips(ctx, base, h, hud);
-        for (const char* inner : {"player_hud0", "player_hud1"}) {
-            const uint32_t ph = Segment(ctx, base, h, inner);
-            if (GuestPtr(ph)) hidden += HideStatusClips(ctx, base, ph, inner);
-        }
-        // The action queue is the panel in the bottom right: a translucent purple strip of slots
-        // with a picture of whatever the sim is doing in each. The pictures are worth keeping -
-        // they say *what* is queued, and the game renders them into clips the host cannot draw -
-        // so only the strip's own artwork goes. Each slot is three clips under the queue
-        // (sub_12FF00 binds them): "aq%d" the plate, "aqa%d" the arrow, "aqi%d" the picture.
-        // Hiding the first two and keeping the third leaves the icons floating, and the modern
-        // chips are drawn around them.
-        const uint32_t proto = Segment(ctx, base, h, "mc_actionProto");
-        const uint32_t queue = proto ? Segment(ctx, base, proto, "mc_actionQueue") : 0u;
-        LOGI("hud: %s/mc_actionProto -> %08X, mc_actionQueue -> %08X", hud, proto, queue);
-        if (GuestPtr(queue, 4)) {
-            g_queue_clip.store(queue, std::memory_order_relaxed);
-            for (int i = 0; i < 9; i++) {
-                char name[16];
-                std::snprintf(name, sizeof name, "aq%d", i);
-                const uint32_t plate = Segment(ctx, base, queue, name);
-                std::snprintf(name, sizeof name, "aqa%d", i);
-                const uint32_t arrow = Segment(ctx, base, queue, name);
-                std::snprintf(name, sizeof name, "aqi%d", i);
-                const uint32_t icon = Segment(ctx, base, queue, name);
-                LOGI("hud: queue slot %d plate %08X arrow %08X icon %08X", i, plate, arrow, icon);
-                if (GuestPtr(plate, 4)) {
-                    RememberClip(plate);
-                    hidden++;
-                }
-                if (GuestPtr(arrow, 4)) {
-                    RememberClip(arrow);
-                    hidden++;
-                }
-                if (GuestPtr(icon, 4)) g_queue_icons[i].store(icon, std::memory_order_relaxed);
-            }
-        }
-    }
-    // the dialogue boxes hang off ingame, beside hud0 - the script sets mc_npcDialog._visible there
-    for (const char* n : {"mc_npcDialog", "mc_npc2Dialog"}) {
-        const uint32_t clip = Segment(ctx, base, ingame, n);
-        LOGI("hud: ingame/%s -> %08X", n, clip);
-        if (GuestPtr(clip)) {
-            RememberClip(clip);
-            hidden++;
-        }
-    }
-    LOGI("hud: %d legacy clips hidden", hidden);
-    if (hidden) g_probed.store(true, std::memory_order_relaxed);
-}
-
-}  // namespace
-
-// sub_001FA850(parent, name, flag) -> child in eax; cdecl, the caller pops
-X86_FUNC(sub_001FA850) {
-    LOG_FIRST(3, "hud: child lookup hook reached");
-    char name[64];
-    const uint32_t parent = kernel::R32(ctx.esp + 0x4u);  // read before the call: it pops on return
-    const bool named = GuestString(kernel::R32(ctx.esp + 0x8u), name);
-    __imp__sub_001FA850(ctx, base);
-    if (!named) return;
-    LogNameOnce(name);
-    LOG_FIRST(60, "hud: game lookup \"%s\" parent %08X -> %08X", name, parent, ctx.eax);
-    if (CornerClip(name) && GuestPtr(ctx.eax)) RememberClip(ctx.eax);
-    // a path the game resolved itself names a parent the HUD hangs under: ask it for ours too
-    if (!std::strncmp(name, "ingame/", 7)) ProbeHudClips(ctx, base, parent);
-}
-
-// sub_001416C0(this = HUD object in ecx, name): the movie's variable getter. Whatever the game
-// passes here is the live HUD object by definition, so the host takes its base from the game
-// rather than trusting a global to still mean what it meant at boot.
+// sub_001416C0(this = HUDData in ecx, name): the movie's variable getter, and the one place that
+// says which HUDData the movie is reading from.
 X86_FUNC(sub_001416C0) {
     const uint32_t object = ctx.ecx;
-    if (GuestPtr(object, 0x980) && g_hud_data.load(std::memory_order_relaxed) != object) {
+    if (GuestPtr(object, kHudDataSize) && g_hud_data.load(std::memory_order_relaxed) != object) {
         g_hud_data.store(object, std::memory_order_relaxed);
-        LOGI("hud: hud object %08X (global holds %08X)", object, kernel::R32(0x35A740u));
+        LOGI("hud: hud object %08X (global holds %08X)", object, kernel::R32(kHudDataPtr));
     }
     __imp__sub_001416C0(ctx, base);
 }
 
-// sub_0012FF00(this in esi): the action queue controller's constructor, which is where it binds
-// the bottom-right panel's clips. Capturing `this` is the only way to the queue's own state -
-// how many actions are lined up and which one is running - since none of it is exposed as a HUD
-// variable. Only player one's controller is kept; the second one belongs to hud1.
-X86_FUNC(sub_0012FF00) {
-    const uint32_t ctrl = ctx.esi;  // read first: the body uses esi as scratch
-    __imp__sub_0012FF00(ctx, base);
-    if (!GuestPtr(ctrl, 0x320)) return;
-    if (*static_cast<const uint8_t*>(kernel::HostPtr(ctrl + 789u)) != 0) return;
-    g_queue_ctrl.store(ctrl, std::memory_order_relaxed);
-    LOGI("hud: action queue controller %08X", ctrl);
-}
+namespace {
 
-// The motive percentages are a cache, not state: sub_142430 asks the sim for one motive through
-// its virtual table and writes the byte at +0xA8 + 6*player + bar that the HUD then reads back.
-// Nothing fills that cache on its own - the movie's bars pull it while they are on screen, and
-// hiding them stops the pulling, which is why the bars read as flat zeroes once the legacy HUD
-// was suppressed. So the host pulls instead: six calls a frame, the same six the game makes when
-// its own bars are up, with the bar index in ebx and the object and player on the stack the way
-// the function is written. Registers and the stack are put back, so the caller sees nothing.
+// The motive percentages are a cache filled by sub_142430: it asks the sim for one motive through
+// its virtual table and writes the byte at +0xA8 + 6*player + bar. The movie's poll clip has the
+// HUD_bar getter make that call for one bar at a time, a movie frame apart; the host makes all six
+// every frame so the modern bars move as smoothly as the sim does. The bar index goes in ebx and the
+// object and player on the stack the way the function is written; registers and the stack are put
+// back, so the caller sees nothing.
+//
+// It writes into HUDData, so it runs only while that object is certainly alive and in use: the
+// game's own pointer still names it, the movie is reading from that same object, and the HUD is up.
+// Between a delete (Create-an-Urb, quit-to-menu, HUD_transition) and the movie's first read of the
+// replacement the first two disagree, and an old copy of the pointer would have this writing six
+// bytes and six int16 into freed memory every frame.
 void RefreshMotives(X86Context& ctx, uint8_t* base) {
-    const uint32_t object = g_hud_data.load(std::memory_order_relaxed);
-    if (!GuestPtr(object, 0x980)) return;
-    const uint32_t player = *static_cast<const uint8_t*>(kernel::HostPtr(object + 0xF9u)) & 1u;
+    const uint32_t object = LiveHudData();
+    const uint32_t captured = g_hud_data.load(std::memory_order_relaxed);
+    if (object != captured) {
+        static uint32_t told_object = ~0u, told_captured = ~0u;  // title thread only
+        if (object != told_object || captured != told_captured) {
+            told_object = object;
+            told_captured = captured;
+            LOG_FIRST(64, "hud: motive refresh skipped, movie reads %08X, game holds %08X", captured,
+                      kernel::R32(kHudDataPtr));
+        }
+        return;
+    }
+    if (!object || !HudUp(object)) return;
+    const uint32_t player = R8(object + 0xF9u) & 1u;
     const uint32_t esp = ctx.esp, eax = ctx.eax, ebx = ctx.ebx, ecx = ctx.ecx, edx = ctx.edx;
     for (uint32_t bar = 0; bar < 6; bar++) {
         ctx.ebx = bar;
@@ -462,25 +219,215 @@ void RefreshMotives(X86Context& ctx, uint8_t* base) {
     ctx.edx = edx;
 }
 
-// The Apt display-list walk, once per frame per movie. Two things ride on it: the legacy status
-// clips get their visibility bit cleared so the game itself skips them (no second HUD painted
-// over the first), and the motive cache the modern HUD reads is refreshed, because suppressing
-// the game's bars also stops them pulling those values.
+// Keeping the game from drawing its own status clips - and why doing it wrong killed the pause menu.
 //
-// The bit stays cleared - clearing it only around the walk put the HUD straight back on screen,
-// since the draw happens after the walk returns. Re-clearing every frame also covers the script
-// turning its clips back on when it animates the HUD in. The walk recurses (a clip renders its
-// children through sub_2153B0, which calls back in here), so only the outermost call does this.
+// Every display object carries a bit 0x8000 in [obj+0x04] that the walk below (sub_229760) tests
+// before drawing a child, and clearing it does hide the clip and its whole subtree. But it is not
+// _visible - that is the float at [[obj+0x48]+0x2C], property 8 of the getter sub_218120, and the
+// renderer tests it separately. It is the display list's "live" bit: PlaceObject (sub_22A220) sets
+// it, removal (sub_22AF50) clears it, and the rest of the runtime takes an object without it for
+// one that has been removed:
+//   - the per-frame advance (sub_2298C0 -> sub_22B8B0) skips it: its timeline, its clip events and
+//     everything under it stop;
+//   - code queued to run on it is dropped (sub_20FE40 and sub_208A00 test the bit first);
+//   - method calls on it do nothing (sub_206620 tests the bit before it looks the method up).
+//
+// The HUD's show and hide are carried by exactly those clips (tsc3_ingame.apt, read out of
+// DATA/flashes.arc). ingame.init leaves inputHandler on onIngameInputIgnore; hud.showMeters plays
+// mc_meters (mc_meters_job in job mode) from "show", and only that segment's last frame (17/18:
+// stop(); _parent.onMeterShow()) reaches ingame.onHudShowComplete, the one place that switches
+// inputHandler to onIngameInput and sets HUD_state 2. Hiding mirrors it: onIngameInput's PAUSE
+// branch sets HUD_pause and calls hideHud("launchPauseMenu"), and launchPauseMenu (destroyHUD,
+// then the "Pause" flow state) runs from the end of mc_meters' "hide" segment (31/58: stop();
+// _parent.onMeterHide()). An earlier version of this hook cleared the bit for good from the
+// moment the HUD was built, before it had shown: mc_meters froze, the show never completed, Start
+// and the phone button stayed on onIngameInputIgnore - nothing opened and nothing paused - and
+// mc_meterClockPoll froze with it, which stopped the motive and reputation caches refreshing.
+//
+// So the bit is cleared for the walk alone and put back the moment it returns. Script, timelines,
+// input and teardown all see the clips exactly as the game left them, and switching the modern HUD
+// off in the F1 panel gives the old one back on the next frame with nothing to repair. The clips
+// are found afresh at the start of every walk, by name, from the root list the walk itself is
+// given, because the game throws the whole HUD movie away on the way into the pause menu or the
+// phone (launchPauseMenu and launchPhone both call destroyHUD) and builds a new one on the way
+// back: a pointer kept from an earlier HUD points into freed memory that is soon reused.
+constexpr uint32_t kLiveBit = 0x8000u;
+constexpr uint32_t kMaxSiblings = 512;  // bounds every walk along a sibling chain
+
+bool Live(uint32_t obj) { return (kernel::R32(obj + 0x4u) & kLiveBit) != 0; }
+
+// The first child in a display list, reached the way the game's own child lookup sub_1FA850 reaches
+// it: the list holder points at the list, the list's first dword is its head object, the first child
+// is [head+0x58], and siblings chain through [child+0x58]. Every hop is checked because the movie can
+// be halfway through being built or torn down when the host looks.
+uint32_t FirstInList(uint32_t holder) {
+    if (!GuestPtr(holder, 4)) return 0;
+    const uint32_t list = kernel::R32(holder);
+    if (!GuestPtr(list, 4)) return 0;
+    const uint32_t head = kernel::R32(list);
+    if (!GuestPtr(head, 0x5C)) return 0;
+    return kernel::R32(head + 0x58u);
+}
+
+// only a live sprite (type 0x0D) or movie (0x12) has children; its list holder is [obj+0x50]+0x24
+uint32_t FirstChild(uint32_t obj) {
+    if (!GuestPtr(obj, 0x5C)) return 0;
+    const uint32_t flags = kernel::R32(obj + 0x4u);
+    const uint32_t type = flags & 0x3Fu;
+    if (!(flags & kLiveBit) || (type != 0x0Du && type != 0x12u)) return 0;
+    const uint32_t data = kernel::R32(obj + 0x50u);
+    return GuestPtr(data, 0x28) ? FirstInList(data + 0x24u) : 0u;
+}
+
+// A child's instance name, as sub_1FA850 compares it: [obj+0x0C] is a string object whose
+// NUL-terminated characters start at +0x08.
+bool ChildName(uint32_t obj, char (&buf)[24]) {
+    const uint32_t s = kernel::R32(obj + 0x0Cu);
+    if (!GuestPtr(s, 8u + sizeof buf)) return false;
+    const char* text = static_cast<const char*>(kernel::HostPtr(s + 8u));
+    for (size_t i = 0; i < sizeof buf; i++)
+        if ((buf[i] = text[i]) == '\0') return true;
+    return false;  // longer than any name looked for here
+}
+
+// parent's live child called `name`, or 0
+uint32_t Child(uint32_t parent, const char* name) {
+    char buf[24];
+    uint32_t c = FirstChild(parent);
+    for (uint32_t i = 0; i < kMaxSiblings && GuestPtr(c, 0x5C); i++, c = kernel::R32(c + 0x58u))
+        if (Live(c) && ChildName(c, buf) && !std::strcmp(buf, name)) return c;
+    return 0;
+}
+
+// The clips the walk is not to draw this frame, and the record of what to put back afterwards.
+struct Hidden {
+    static constexpr int kCapacity = 64;
+    uint32_t clip[kCapacity];
+    int count = 0;
+
+    void Add(uint32_t c) {
+        const uint32_t flags = kernel::R32(c + 0x4u);
+        if (!(flags & kLiveBit) || count == kCapacity) return;
+        kernel::W32(c + 0x4u, flags & ~kLiveBit);
+        clip[count++] = c;
+    }
+    void Restore() const {
+        for (int i = 0; i < count; i++) kernel::W32(clip[i] + 0x4u, kernel::R32(clip[i] + 0x4u) | kLiveBit);
+    }
+};
+
+// hud0's own status children: exactly what the HUD symbol (character 162 of tsc3_ingame.apt) places
+// on its third frame. The reputation meter, mood face and clock (mc_rep, mc_mood, mc_clockText, ...)
+// live inside mc_meters and mc_meters_job and go with them. mc_actionProto, the pie menu and queue
+// the script adds beside them, stays: it is interaction, not status.
+const char* const kStatusClips[] = {
+    "mc_meters",    "mc_meters_job", "mc_meterbar0", "mc_meterbar1",      "mc_meterbar2",
+    "mc_meterbar3", "mc_meterbar4",  "mc_simoleons", "mc_meterClockPoll", "mc_ringtone",
+};
+
+bool StatusClip(const char* name) {
+    for (const char* n : kStatusClips)
+        if (!std::strcmp(name, n)) return true;
+    return false;
+}
+
+// The action queue's slot plates "aq0".."aq8" and arrows "aqa0".."aqa8" (sub_12FF00 binds them). The
+// pictures "aqi%d" stay: the game renders what the sim is about to do into them, the host cannot,
+// and the modern chips are drawn around them.
+bool QueuePlate(const char* n) {
+    if (n[0] != 'a' || n[1] != 'q') return false;
+    const char* digit = n[2] == 'a' ? n + 3 : n + 2;
+    return digit[0] >= '0' && digit[0] <= '9' && digit[1] == '\0';
+}
+
+void HideHud(uint32_t hud, Hidden& out) {
+    char name[24];
+    uint32_t proto = 0;
+    uint32_t c = FirstChild(hud);
+    for (uint32_t i = 0; i < kMaxSiblings && GuestPtr(c, 0x5C); i++, c = kernel::R32(c + 0x58u)) {
+        if (!Live(c) || !ChildName(c, name)) continue;
+        if (StatusClip(name)) out.Add(c);
+        else if (!std::strcmp(name, "mc_actionProto")) proto = c;
+    }
+    c = FirstChild(Child(proto, "mc_actionQueue"));
+    for (uint32_t i = 0; i < kMaxSiblings && GuestPtr(c, 0x5C); i++, c = kernel::R32(c + 0x58u))
+        if (Live(c) && ChildName(c, name) && QueuePlate(name)) out.Add(c);
+}
+
+struct HudMovie {
+    uint32_t ingame = 0, hud0 = 0, hud1 = 0;
+};
+
+// From the list the outermost walk is given - the root's (dword_2E6140 + 4652, from sub_1F6100) -
+// to the clips: the root movie holds "ingame", the HUD movie, which holds hud0 (and hud1 in a
+// two-player game) and the two NPC dialogue boxes the modern chat card replaces.
+HudMovie HideLegacyHud(uint32_t walk_list, Hidden& out) {
+    HudMovie found;
+    uint32_t top = FirstInList(walk_list);
+    for (uint32_t i = 0; i < kMaxSiblings && !found.ingame && GuestPtr(top, 0x5C); i++) {
+        found.ingame = Child(top, "ingame");
+        top = kernel::R32(top + 0x58u);
+    }
+    char name[24];
+    uint32_t c = FirstChild(found.ingame);
+    for (uint32_t i = 0; i < kMaxSiblings && GuestPtr(c, 0x5C); i++, c = kernel::R32(c + 0x58u)) {
+        if (!Live(c) || !ChildName(c, name)) continue;
+        if (!std::strcmp(name, "hud0")) found.hud0 = c;
+        else if (!std::strcmp(name, "hud1")) found.hud1 = c;
+        else if (!std::strcmp(name, "mc_npcDialog") || !std::strcmp(name, "mc_npc2Dialog")) out.Add(c);
+    }
+    if (found.hud0) HideHud(found.hud0, out);
+    if (found.hud1) HideHud(found.hud1, out);
+    return found;
+}
+
+// One line whenever the HUD movie the walk finds changes - first seen, gone behind the pause menu,
+// rebuilt at new addresses - with how many clips it keeps off screen.
+void NoteHud(const HudMovie& now, int hidden) {
+    static HudMovie seen;  // title thread only
+    static int seen_hidden = -1;
+    if (now.ingame == seen.ingame && now.hud0 == seen.hud0 && now.hud1 == seen.hud1 && hidden == seen_hidden)
+        return;
+    LOG_FIRST(256, "hud: legacy HUD now ingame %08X hud0 %08X hud1 %08X (was %08X %08X %08X), %d clips hidden "
+              "while drawing", now.ingame, now.hud0, now.hud1, seen.ingame, seen.hud0, seen.hud1, hidden);
+    seen = now;
+    seen_hidden = hidden;
+}
+
+}  // namespace
+
+// The Apt display-list walk: once a frame from sub_1F6100 for the root's list, and again for every
+// clip's children through sub_2153B0, so only the outermost call does anything here.
 X86_FUNC(sub_00229760) {
     LOG_FIRST(2, "hud: display list walk hook reached");
+    // Each half can be switched off for a run, the way the frame-rate wrappers can, so a defect
+    // can be bisected against stock behaviour without a rebuild: URBZ_NO_HUDHIDE leaves the
+    // legacy clips drawing, URBZ_NO_HUDREFRESH stops the host pulling the motive values.
+    static const bool no_hide = [] {
+        const char* v = std::getenv("URBZ_NO_HUDHIDE");
+        return v && v[0] && std::strcmp(v, "0") != 0;
+    }();
+    static const bool no_refresh = [] {
+        const char* v = std::getenv("URBZ_NO_HUDREFRESH");
+        return v && v[0] && std::strcmp(v, "0") != 0;
+    }();
     static thread_local int depth = 0;
-    const bool outer = depth++ == 0;
-    if (outer && hud::g_enabled) {
-        HideLegacyClips();
-        RefreshMotives(ctx, base);
+    if (depth > 0 || !hud::g_enabled) {
+        ++depth;
+        __imp__sub_00229760(ctx, base);
+        --depth;
+        return;
     }
+    Hidden hidden;
+    if (!no_hide) {
+        const HudMovie found = HideLegacyHud(ctx.ecx, hidden);
+        NoteHud(found, hidden.count);
+    }
+    if (!no_refresh) RefreshMotives(ctx, base);
+    ++depth;
     __imp__sub_00229760(ctx, base);
     --depth;
+    hidden.Restore();
 }
 
 // The NPC dialogue, from the queue HUDData owns. Native enqueues a record and the movie *pulls*
@@ -515,7 +462,7 @@ void AppendUtf8(char* out, int& n, int cap, uint32_t c) {
 void ReadWide(uint32_t str_obj, char* buf, int cap, hud::Span* spans = nullptr, int* span_count = nullptr) {
     buf[0] = '\0';
     if (span_count) *span_count = 0;
-    if (!GuestPtr(str_obj)) return;
+    if (!GuestPtr(str_obj, 8)) return;
     const uint32_t len = kernel::R32(str_obj + 0x4u);
     const uint32_t text = kernel::R32(str_obj + 0x0u);
     if (!len || len > 4096u || !GuestPtr(text, len * 2u)) return;
@@ -566,11 +513,11 @@ void ReadWide(uint32_t str_obj, char* buf, int cap, hud::Span* spans = nullptr, 
 namespace hud {
 
 bool ReadChat(Chat& out) {
-    const uint32_t h = kernel::R32(0x35A740u);
-    if (!GuestPtr(h)) return false;
+    const uint32_t h = LiveHudData();
+    if (!h) return false;
     const uint32_t state = kernel::R32(h + 0xE0u);
     const uint32_t d = kernel::R32(h + 0xD4u);
-    if (!GuestPtr(d) || (state != 1u && state != 2u)) return false;
+    if (!GuestPtr(d, 0x10) || (state != 1u && state != 2u)) return false;
     ReadWide(kernel::R32(d + 0x8u), out.speaker, int(sizeof out.speaker));
     ReadWide(kernel::R32(d + 0x4u), out.body, int(sizeof out.body), out.spans, &out.span_count);
     return out.body[0] != '\0';

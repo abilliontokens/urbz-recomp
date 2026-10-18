@@ -57,6 +57,9 @@ struct Draft {
     uint32_t fps_cap = 60;
     int render_percent = 100;
     uint32_t aniso = 0;
+    int hdr = 0;            // index into kHdrKeys, app::HdrMode's order
+    int paper_white = 200;  // nits
+    int peak = 0;           // nits, 0 the display's own maximum
 };
 Draft g_draft;
 app::Mode g_desktop{0, 0};   // read when the panel opens: the mode lookup is a syscall
@@ -73,6 +76,12 @@ constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"As the game asks", "2x", "4x", "8x", "16x"};
 const char* const kAspects[] = {"auto", "4:3", "16:9", "16:10", "21:9", "32:9"};
 const char* const kModeNames[] = {"Fullscreen", "Borderless", "Windowed"};
+// app::HdrMode's order: the setting's string, and what the panel calls it
+const char* const kHdrKeys[] = {"off", "auto", "on"};
+const char* const kHdrNames[] = {"Off", "Auto", "On"};
+// the renderer takes 0 (the display's own figure) or 80 to 10000 nits; the slider offers the part
+// of that a player can judge by eye, from below this machine's dimmest HDR panel (417 nits) up
+constexpr int kPeakMin = 100, kPeakMax = 2000, kNitStep = 50;
 
 // the dark style this overlay wears, built once at scale 1 and rescaled from it
 const ImGuiStyle& BaseStyle() {
@@ -267,6 +276,9 @@ void SyncDraft() {
     g_draft.fps_cap = s.fps_cap;
     g_draft.render_percent = int(s.render_percent);
     g_draft.aniso = s.aniso;
+    g_draft.hdr = int(app::HdrWanted());
+    g_draft.paper_white = int(app::PaperWhiteNits());
+    g_draft.peak = int(app::PeakNits());
     g_desktop = app::Desktop();
     g_status[0] = '\0';
     g_status_left = 0.0f;
@@ -279,8 +291,10 @@ void Status(const char* text) {
 
 void Apply() {
     app::Settings& s = app::Get();
-    // the renderer re-reads the settings every present (ApplySettings), so only the window itself
-    // has to be told, and only when its mode or size actually moved
+    // the renderer re-reads the settings every present (ApplySettings) and remakes the swap chain
+    // itself when the HDR mode or the display changes, so HDR must NOT come through here: an
+    // ApplyDisplay recentres a windowed window and, fullscreen at a non-desktop resolution, resets
+    // and re-sets the display mode (main.cpp:87-104). Only the window's own mode or size does.
     bool relayout = s.display_mode != g_draft.mode || s.width != g_draft.width || s.height != g_draft.height;
     s.display_mode = g_draft.mode;
     s.width = g_draft.width;
@@ -293,6 +307,10 @@ void Apply() {
     s.fps_cap = g_draft.fps_cap;
     s.render_percent = uint32_t(std::max(g_draft.render_percent, 1));
     s.aniso = g_draft.aniso;
+    // like the aspect, each choice fits the string's own storage
+    s.hdr = kHdrKeys[g_draft.hdr];
+    s.hdr_paper_white = uint32_t(g_draft.paper_white);
+    s.hdr_peak = uint32_t(g_draft.peak);
     if (relayout) app::ApplyDisplay();
 }
 
@@ -373,6 +391,51 @@ void DrawDisplay() {
     }
     Note("Any of these runs the game at its real speed: the frame step is the time that really "
          "passed, not a 60th of a second per frame (src/game/hooks.cpp).");
+
+    Row("HDR");
+    ImGui::Combo("##hdr", &g_draft.hdr, kHdrNames, int(std::size(kHdrNames)));
+    // what the swap chain made of the setting, not the draft: it changes on Apply, or when the
+    // window moves to another display
+    const app::HdrStatus hdr = app::Hdr();
+    char status[160];
+    // `why` is set whenever it has something to say, including while HDR is active: "on" forced
+    // onto a display Windows runs in SDR is active but not really HDR, and the player needs to be
+    // told that rather than left reading a peak number that means nothing
+    if (hdr.active && hdr.why && *hdr.why)
+        std::snprintf(status, sizeof status, "HDR is on: %s.", hdr.why);
+    else if (hdr.active && hdr.display_max_nits)
+        std::snprintf(status, sizeof status, "HDR is on: this display peaks at %u nits.", hdr.display_max_nits);
+    else if (hdr.active)
+        std::snprintf(status, sizeof status, "HDR is on: this display does not report its peak.");
+    else if (hdr.why && *hdr.why)
+        std::snprintf(status, sizeof status, "HDR is off: %s.", hdr.why);
+    else
+        std::snprintf(status, sizeof status, "HDR is off.");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(status);
+    ImGui::PopTextWrapPos();
+    Note("Auto uses HDR when the display the window is on has HDR turned on in Windows; On asks for "
+         "it whatever the display reports; Off keeps the picture exactly as it always was.");
+
+    // the two brightness numbers only mean anything to an HDR swap chain
+    ImGui::BeginDisabled(!hdr.active);
+    Row("Paper white");
+    if (ImGui::SliderInt("##paperwhite", &g_draft.paper_white, 80, 480, "%d nits", ImGuiSliderFlags_AlwaysClamp))
+        g_draft.paper_white = (g_draft.paper_white + 5) / 10 * 10;
+    Note("How bright the game's white is drawn. Raise it if the picture looks dim next to the desktop.");
+
+    Row("Peak brightness");
+    if (g_draft.peak) std::snprintf(text, sizeof text, "%%d nits");
+    else if (hdr.display_max_nits) std::snprintf(text, sizeof text, "Display maximum (%u nits)", hdr.display_max_nits);
+    else std::snprintf(text, sizeof text, "Display maximum");
+    if (ImGui::SliderInt("##peak", &g_draft.peak, 0, kPeakMax, text, ImGuiSliderFlags_AlwaysClamp)) {
+        // the far left is the display's own figure; past it, whole steps from kPeakMin up
+        if (g_draft.peak < kPeakMin) g_draft.peak = g_draft.peak < kPeakMin / 2 ? 0 : kPeakMin;
+        else g_draft.peak = (g_draft.peak + kNitStep / 2) / kNitStep * kNitStep;
+    }
+    Note("The brightest the picture may get. Leave it at the display's maximum unless highlights "
+         "look clipped or harsh on this screen.");
+    ImGui::EndDisabled();
 }
 
 void DrawQuality() {

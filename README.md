@@ -21,9 +21,16 @@ You supply the game: the USA Xbox release, as a disc image or as the files from 
 You need Windows 10/11 x64 and a Direct3D 12 GPU. Play it with a controller (Xbox, PlayStation and
 Switch pads all work, through SDL) or with the keyboard and mouse - see **Controls** below. The first
 run writes `settings.toml`, `logs\` and `hdd\` (where saves go) beside the exe. In game, **F1** opens
-settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, render scale,
+settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, HDR, render scale,
 anisotropic filtering, the modern HUD) and the game's own console cheats, which are off until ticked
 and never saved, and **F2** the frame-time graph.
+
+HDR is off by default, and off the picture is exactly what it always was. Auto uses HDR when the
+display the window is on has it turned on in Windows, and On asks for it whatever the display reports;
+the panel says underneath whether HDR is really on and, if not, why. Paper white is how bright the
+game's white is drawn, 100-400 nits. Peak brightness is the most any highlight may reach, and left at
+its default it takes the display's own maximum. The game itself is drawn in 8-bit SDR, so HDR does not
+add detail: it puts that picture on an HDR display at a sensible brightness instead of washed out.
 
 Any frame rate runs the game at its real speed, including uncapped on a high-refresh display. The
 engine quantised its frame step to whole 60ths of a second, which made it run 2.4x fast at 144 fps;

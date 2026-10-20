@@ -1,7 +1,7 @@
 // the in-game overlay: F2 a performance panel, F1 a settings panel, both off until asked for.
 // app::GameInfo::ui calls Draw on the render thread, inside the renderer's own ImGui frame and
-// under app::UiLock (gpu/d3d12.cpp RenderUi), so nothing here may block, allocate per frame or
-// trust that a context, a window size or a pad exists.
+// under app::UiLock (gpu/d3d12.cpp RenderUi; gpu/vulkan.cpp RenderUi on Linux), so nothing here
+// may block, allocate per frame or trust that a context, a window size or a pad exists.
 #include "common/overlay.h"
 
 #include "common/cheats.h"
@@ -19,14 +19,19 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#if !defined(_WIN32)
+#include "app/platform.h"      // app::HostAspect, app::platform::QueryHdr
+#include "common/input_kbm.h"  // kbm::NoteWheel
+#endif
 
 namespace overlay {
 
 namespace {
 
 // the guest creates its device at 640x480 once and never resizes it (xdk/d3d8.cpp), so the host
-// frame target is that, widened for ultrawide, times the render scale (gpu/d3d12.cpp
-// CreateTargetResource); the inner rounding happens in guest pixels, before the scale
+// frame target is that, widened for ultrawide as the backend in use widens it (BackendWiden),
+// times the render scale (gpu/d3d12.cpp CreateTargetResource, its Vulkan counterpart on Linux);
+// the inner rounding happens in guest pixels, before the scale
 constexpr float kGuestW = 640.0f, kGuestH = 480.0f;
 
 constexpr int kSamples = 120;  // frame times behind the graph, two seconds at 60 fps
@@ -190,7 +195,40 @@ const char* AspectName(float a) {
     return nullptr;
 }
 
-// the host frame target for a render scale, exactly as CreateTargetResource builds it
+#if !defined(_WIN32)
+// the aspect chosen in the panel as a ratio, 0 for auto: the Vulkan backend presents a frame it
+// has not widened at that shape (gpu/vulkan.cpp PresentSrcAspect)
+float ChosenAspect() {
+    struct Named {
+        const char* name;
+        float ratio;
+    };
+    static constexpr Named kChosen[] = {
+        {"4:3", 4.0f / 3.0f},   {"16:9", 16.0f / 9.0f}, {"16:10", 16.0f / 10.0f},
+        {"21:9", 21.0f / 9.0f}, {"32:9", 32.0f / 9.0f},
+    };
+    const std::string& chosen = app::Get().aspect_ratio;
+    for (const Named& n : kChosen)
+        if (chosen == n.name) return n.ratio;
+    return 0.0f;
+}
+#endif
+
+// Hor+ widening is the backend's, not the settings': the D3D12 backend draws its frame target
+// app::AspectWiden() times wider, the Vulkan backend only as wide as app::HostAspect() at the same
+// height, and no wider at all while that is 0 (gpu/vulkan.cpp WidenedGuestWidth). The panel
+// reports what the backend in use really builds.
+float BackendWiden() {
+#if defined(_WIN32)
+    return app::AspectWiden();
+#else
+    float aspect = app::HostAspect();
+    return aspect > 0.0f ? aspect * (kGuestH / kGuestW) : 1.0f;
+#endif
+}
+
+// the host frame target for a render scale, exactly as the backend builds it: CreateTargetResource
+// in gpu/d3d12.cpp, its Vulkan counterpart in gpu/vulkan.cpp
 void FrameTarget(float scale, float widen, uint32_t& w, uint32_t& h) {
     long guest_w = std::lround(kGuestW * widen);
     w = uint32_t(std::max<long>(std::lround(guest_w * scale), 1));
@@ -239,11 +277,19 @@ void DrawPerf(double fps) {
     ImGui::PlotLines("##frametime", g_ring.ms, g_ring.count, g_ring.count == kSamples ? g_ring.next : 0, graph,
                      0.0f, hi * 1.25f + 1.0f, {ImGui::GetContentRegionAvail().x, 44.0f * g_ui_scale});
 
-    float widen = app::AspectWiden();
+    float widen = BackendWiden();
     float scale = app::RenderScale(uint32_t(kGuestH));
     uint32_t rw = 0, rh = 0;
     FrameTarget(scale, widen, rw, rh);
+#if defined(_WIN32)
     float aspect = app::Widescreen() ? 16.0f / 9.0f * widen : 4.0f / 3.0f;
+#else
+    // what the Vulkan backend presents (gpu/vulkan.cpp BlitFrame): a widened frame at its own
+    // shape, any other at the aspect chosen in the panel, or on auto at the shape the title projects
+    float aspect = app::HostAspect();
+    if (aspect <= 0.0f) aspect = ChosenAspect();
+    if (aspect <= 0.0f) aspect = app::Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
+#endif
 
     const float col = ImGui::CalcTextSize("render ").x;
     char value[48];
@@ -294,7 +340,8 @@ void Apply() {
     // the renderer re-reads the settings every present (ApplySettings) and remakes the swap chain
     // itself when the HDR mode or the display changes, so HDR must NOT come through here: an
     // ApplyDisplay recentres a windowed window and, fullscreen at a non-desktop resolution, resets
-    // and re-sets the display mode (main.cpp:87-104). Only the window's own mode or size does.
+    // and re-sets the display mode (main.cpp:89-106, main_sdl.cpp ApplyNow on Linux). Only the
+    // window's own mode or size does.
     bool relayout = s.display_mode != g_draft.mode || s.width != g_draft.width || s.height != g_draft.height;
     s.display_mode = g_draft.mode;
     s.width = g_draft.width;
@@ -359,8 +406,14 @@ void DrawDisplay() {
         }
         ImGui::EndCombo();
     }
+#if defined(_WIN32)
     Note("Windowed sizes the window and fullscreen switches the display mode; borderless always "
          "fills the monitor and takes this as the render size alone.");
+#else
+    Note("Windowed sizes the window, and fullscreen presents at this size: a real display-mode switch "
+         "where the platform allows one, scaled to the display where it does not (Wayland). "
+         "Borderless always fills the monitor and takes this as the render size alone.");
+#endif
 
     Row("Aspect ratio");
     if (ImGui::BeginCombo("##aspect", g_draft.aspect)) {
@@ -393,10 +446,22 @@ void DrawDisplay() {
          "passed, not a 60th of a second per frame (src/game/hooks.cpp).");
 
     Row("HDR");
+#if defined(_WIN32)
     ImGui::Combo("##hdr", &g_draft.hdr, kHdrNames, int(std::size(kHdrNames)));
     // what the swap chain made of the setting, not the draft: it changes on Apply, or when the
     // window moves to another display
     const app::HdrStatus hdr = app::Hdr();
+#else
+    // The Vulkan build has no HDR swap chain, and app::platform::QueryHdr() says so: on Linux it
+    // answers, always and without asking the window, that the display is not capable, and why
+    // (app/platform.h). The status below is that answer, never a claim of HDR, and the choice is
+    // greyed rather than offered and silently ignored.
+    const app::platform::HdrInfo display = app::platform::QueryHdr();
+    ImGui::BeginDisabled(!display.capable);
+    ImGui::Combo("##hdr", &g_draft.hdr, kHdrNames, int(std::size(kHdrNames)));
+    ImGui::EndDisabled();
+    const app::HdrStatus hdr{display.active, display.capable, display.max_nits, display.why};
+#endif
     char status[160];
     // `why` is set whenever it has something to say, including while HDR is active: "on" forced
     // onto a display Windows runs in SDR is active but not really HDR, and the player needs to be
@@ -414,8 +479,13 @@ void DrawDisplay() {
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(status);
     ImGui::PopTextWrapPos();
+#if defined(_WIN32)
     Note("Auto uses HDR when the display the window is on has HDR turned on in Windows; On asks for "
          "it whatever the display reports; Off keeps the picture exactly as it always was.");
+#else
+    Note("The picture stays SDR whatever is chosen here, and the two brightness settings below do "
+         "nothing: this build has no HDR output on Linux.");
+#endif
 
     // the two brightness numbers only mean anything to an HDR swap chain
     ImGui::BeginDisabled(!hdr.active);
@@ -445,7 +515,7 @@ void DrawQuality() {
     app::Mode out = g_draft.width && g_draft.height ? app::Mode{g_draft.width, g_draft.height} : g_desktop;
     float scale = std::max(out.height * (g_draft.render_percent / 100.0f) / kGuestH, 0.1f);
     uint32_t rw = 0, rh = 0;
-    FrameTarget(scale, app::AspectWiden(), rw, rh);
+    FrameTarget(scale, BackendWiden(), rw, rh);
     char text[80];
     std::snprintf(text, sizeof text, "%u x %u frame target, from the guest's 640 x 480.", rw, rh);
     Note(text);
@@ -583,9 +653,10 @@ void Draw(double fps) {
     if (!ImGui::GetCurrentContext()) return;
     ImGuiIO& io = ImGui::GetIO();
 
-    // the pad belongs to the game alone. main.cpp turns gamepad navigation on for ImGui at
-    // startup, and the Win32 backend feeds XInput into it whatever the flag says, so clear the
-    // flag every frame: no overlay window can ever act on a button the player pressed
+    // the pad belongs to the game alone. Both hosts turn gamepad navigation on for ImGui at
+    // startup (main.cpp, main_sdl.cpp); the Win32 backend feeds XInput into it whatever the flag
+    // says and the SDL3 backend feeds pads while it is set, so clear the flag every frame: no
+    // overlay window can ever act on a button the player pressed
     io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
 
     // minimized, or before the backend has a size: nothing to draw into
@@ -593,8 +664,9 @@ void Draw(double fps) {
     ScaleStyle(io);
     Sample(io.DeltaTime);
 
-    // the window thread feeds every key message to ImGui under the same lock (main.cpp WndProc),
-    // so these land while the game has focus. F3 is the frame capture's
+    // the window thread feeds every key message to ImGui under the same lock (main.cpp WndProc,
+    // main_sdl.cpp HandleEvent on Linux), so these land while the game has focus. F3 is the frame
+    // capture's
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
         g_settings_open = !g_settings_open;
         if (g_settings_open) {
@@ -618,6 +690,13 @@ void Draw(double fps) {
         hud::Chat hc;
         if (hud::ReadChat(hc)) hud::DrawChat(hc);
     }
+
+#if !defined(_WIN32)
+    // the SDL host has no wheel message for kbm to read, so ImGui's wheel is handed over here as
+    // the camera's zoom pulse (input_kbm.cpp); while the settings panel is up the wheel is the
+    // panel's, not the game's
+    if (!g_settings_open && io.MouseWheel != 0.0f) kbm::NoteWheel(int(std::lround(io.MouseWheel)));
+#endif
 
     if (!g_perf_open && !g_settings_open) return;  // closed: the overlay draws nothing else
     if (g_perf_open) DrawPerf(fps);

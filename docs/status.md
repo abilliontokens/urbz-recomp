@@ -694,3 +694,109 @@ way (`src/game/cheats.cpp`, `src/common/cheats.h`). Built, not yet verified in p
 | 11 | L R R L Right | none: plays a sound only |
 
 The panel offers rows 0, 2, 3, 5, 7, 8, 9 and 10 and the team photo, the cheats IGN's list names.
+
+## The Linux target
+
+Recorded 2026-10-19. The port now builds and runs natively on Linux - Vulkan for the picture, SDL3
+for the window, input and audio - from the same recompiled code as the Windows build. The
+recompiler's output is platform-neutral, so `generated/` is shared between the two.
+
+### What moved
+
+- **The SDK.** `sdk/` was fast-forwarded from `b3b8b9d` to `adc40ab` on `urbz-port-fixes`. That is a
+  strict linear superset - `git merge-base urbz-port-fixes bustinout-port` was exactly the old pin,
+  so nothing of this port's own SDK work was rewound. It brings `runtime/app/main_sdl.cpp`,
+  `runtime/gpu/vulkan.cpp`, `runtime/gpu/spirv.cpp`, `runtime/audio/sdl_audio.cpp`,
+  `runtime/app/platform.h` and the POSIX paths through `runtime/kernel/`, plus the Windows-side
+  D3D8/D3D12 fidelity fixes that came with them.
+- **The build.** `linux-debug` / `linux-release` / `linux-relwithdebinfo` presets, `build.sh` and
+  `release.sh` beside the existing `.bat` pair, and - because this machine has no Windows - a
+  `host-tools` + `windows-cross` pair with `cmake/windows-cross.cmake`, which cross-builds
+  `Urbz.exe` with clang-cl and lld-link against an xwin MSVC/Windows SDK cache.
+- **The host glue.** `src/common/input_kbm.cpp` grew the platform split it never needed: a logical
+  `Key` enum and a `State` snapshot that `Apply()` is the only reader of, filled on Windows from the
+  virtual-key atomics `Message` keeps and on Linux from `SDL_GetKeyboardState` plus the mouse sample
+  `kbm::NoteMouse` caches on the window thread (`SDL_GetMouseState` is main-thread-only). The wheel
+  is the one event-shaped input: `WM_MOUSEWHEEL` on Windows, `kbm::NoteWheel` forwarded from ImGui's
+  wheel by `overlay::Draw` on Linux. `app::GameInfo::message` is null on Linux, where the SDL host
+  calls no message hook. The F1 panel's HDR section reads `app::platform::QueryHdr()`, which on Linux
+  honestly reports no HDR path at all rather than offering a switch that does nothing.
+- **One Release preset, two meanings.** Targeting the MSVC ABI clang leaves `CMAKE_<LANG>_FLAGS_<CONFIG>`
+  empty, so the SDK adds `-O2` and `NDEBUG` is never defined - and the logger's verbose mode keys off
+  `NDEBUG` (`sdk/runtime/core/log.h`). Targeting Linux clang gets CMake's defaults, which carry
+  `-O3 -DNDEBUG`. The same preset therefore gave a rotating verbose `logs/urbz_NNN.log` on Windows and
+  a single `logs/urbz.log` on Linux with the boot preamble and nothing after it: `XBE_PERF=1` printed
+  no perf blocks, the renderer logged no present geometry, and the pad hook's own lines never
+  appeared, which reads exactly like a dead input path. `sdk/cmake/XbeRecomp.cmake` now strips
+  `NDEBUG` on both platforms.
+
+### Built
+
+```
+$ ./build.sh                       # linux-release
+clang version 23.1.3
+[530/530] Linking CXX executable Urbz
+  out/build/linux-release/Urbz     # 18,858,264 bytes, ELF 64-bit PIE x86-64
+```
+
+118 s for all 530 targets on 12 threads, the recompile included. The configure resolved
+`/usr/lib/libvulkan.so`, glslang + SPIRV + glslang-default-resource-limits from `/usr/lib`, DXC
+headers from `/opt/dxc/include` (the library is `dlopen`ed, never linked) and zlib for the splash
+decoder; SDL3, Dear ImGui, toml++ and Zydis are fetched and linked statically by the SDK.
+
+### Run
+
+Boot on this machine (CachyOS, KDE Plasma on Wayland, AMD BC-250):
+
+```
+Display: Wayland (WAYLAND_DISPLAY=wayland-1)
+Game: default.xbe in .../assets, sha1 5712b6a3e2eaaacfcae228cf6154ade499a0033c
+Vulkan adapter: AMD BC-250 (RADV GFX1013) (vendor 1002 device 13fe, driver 109060100)
+audio: sdl stream ok, device 'HD-Audio Generic Digital Stereo (HDMI)' 48000 Hz 2 ch F32
+open D:\data\audiostr.xwb
+```
+
+Driven from the title with `URBZ_STEP`, the Linux build walks the same menu path the Windows build
+does - title, main menu, New Game, through every Create-an-Urb page, to name entry - and the scene
+counts follow it: 1 draw on the title, 54 on the main menu, 528-585 in Create-an-Urb, 341 on the
+name keyboard. Create-an-Urb is the scene worth looking at: two skinned Sims, the store interior,
+the mirror's render target, the translucent option panel and the game's own text, all at
+**60.0 fps / 16.67 ms** against the default cap, 0 draws skipped, 0 pipelines missing, 0 `[error]`
+lines in the log. The synthetic pad lands through the same `app::GameInfo::pad` hook as on Windows
+(`urbz autostart: synthetic Start pressed (port 0, wButtons=0x0010)`), which is what proves the
+Linux input path reaches the guest.
+
+Presentation, from the renderer's own line:
+
+```
+vulkan: present 2880 image 0 front 8023C000 guest 640x480 target 1920x1440 scale 3.000
+  widen 1.344 targetAspect 2.389 srcAspect 1.778 window 3440x1440
+  srcPx (0,48 1920x1344) srcUv (0,0.033)-(1,0.933) dst (440,0 2560x1440)
+```
+
+The 16-row guest letterbox is cropped as on Windows (`srcPx` starts at y=48 of a 3x target), the
+title's own 16:9 picture is presented at 2560x1440 centred in a 3440x1440 window, and nothing is
+stretched to fill the extra width.
+
+### The Windows exe, cross-compiled
+
+`cmake --build --preset windows-cross` links `out/build/windows-cross/Urbz.exe` (PE32+ GUI, x86-64,
+16,253,440 bytes) in 61 s. It imports `MSVCP140.dll`, `VCRUNTIME140.dll` and `VCRUNTIME140_1.dll`,
+so a clean Windows needs the Visual C++ 2015-2022 redistributable; everything else it imports
+(`d3d12`, `dxgi`, `D3DCOMPILER_47`, the `api-ms-win-crt-*` UCRT set, `dbghelp`, `dwmapi`, `ws2_32`)
+ships with Windows 10 and later.
+
+**It has not been run on Windows.** It has run here under Wine 11.20, whose D3D12 is vkd3d over
+Vulkan and whose `d3dcompiler_47` is vkd3d-shader, not Microsoft's: from a disc folder it boots,
+finds the image by SHA-1, reports `D3D12 adapter: ATI Radeon HD 5600 Series` (vkd3d's name for this
+GPU), takes the synthetic pad through `xapi: XInputGetState`, and renders a 493-draw scene at
+**60.0 fps** with **zero** `[error]` lines and no failed shader compiles. That proves the build and
+that the Win32/D3D12/XAudio2 code paths execute; it does not prove Windows draws them correctly.
+
+### Not proven on Linux
+
+Saving to a device and reloading, districts past the starting rooftop, jobs and minigames - the same
+list as Windows. Nothing here was measured in a city district on Linux. A `SIGTERM` delivered while a
+scene is up logs `signal 11` from the teardown path and writes no crash dump; the same is seen on the
+sibling Bustin' Out port, so it predates this work and only happens when the process is killed.
+

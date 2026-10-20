@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <cstdlib>
 #include <cstring>
 
@@ -33,6 +34,11 @@ bool StepPad(int port, input::Pad& pad) {
     static const char* path = std::getenv("URBZ_STEP");
     if (!path || !path[0] || port != 0) return false;
     using namespace std::chrono;
+    // the pad hook runs outside input::Poll's lock, from the guest thread that asks for the pad
+    // and from the controller-port poller (xdk/xapi.cpp) at once; the token and its two
+    // timestamps change together, so every poll holds this lock
+    static std::mutex lock;
+    std::lock_guard<std::mutex> guard(lock);
     static std::string held;
     static int64_t last_read = 0, held_since = 0;
     const int64_t now = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
@@ -166,7 +172,11 @@ const app::GameInfo app::kGame = {
     .init = nullptr,                         // after the settings load, before the window and boot
     .loaded = nullptr,                       // image in memory, before its entry point runs
     .window = nullptr,                       // the game window is up
+#if defined(_WIN32)
     .message = &kbm::Message,                // window messages first; true takes one
+#else
+    .message = nullptr,                      // the SDL host calls no message hook; kbm polls SDL
+#endif
     .ui = &overlay::Draw,                    // ImGui drawing each frame: F1 settings, F2 performance
     .pad = &PadHook,                         // keyboard and mouse as port 0, URBZ_AUTOSTART self-test
     .rumble = nullptr,                       // changes a rumble before it is set

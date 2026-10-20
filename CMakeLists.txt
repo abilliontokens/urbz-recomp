@@ -17,6 +17,13 @@ else()
     FetchContent_MakeAvailable(xbe_sdk)
     set(SDK ${xbe_sdk_SOURCE_DIR})
 endif()
+# host-tools preset: xbe_recomp and xbe_symbols alone, built for this machine. A cross build
+# (windows-cross) runs xbe_recomp during the build and takes it from there (XBE_HOST_TOOLS_DIR).
+option(XBE_HOST_TOOLS_ONLY "build only the SDK's host tools, not the game" OFF)
+if(XBE_HOST_TOOLS_ONLY)
+    include(${SDK}/cmake/XbeTools.cmake)
+    return()
+endif()
 include(${SDK}/cmake/XbeRecomp.cmake)
 
 file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)

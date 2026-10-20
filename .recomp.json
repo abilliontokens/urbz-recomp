@@ -11,9 +11,9 @@
   },
   "project": "The Urbz: Sims in the City Recompiled",
   "status": "in-progress",
-  "targets": ["Windows"],
+  "targets": ["Windows", "Linux"],
   "toolchain": "XboxXBERecomp",
-  "approach": "Static recompilation of the retail XBE to C++; XDK HLE on a Direct3D 12 renderer and XAudio2",
+  "approach": "Static recompilation of the retail XBE to C++; XDK HLE on a Direct3D 12 renderer with XAudio2 on Windows, and a Vulkan renderer with SDL3 on Linux",
   "maintainers": [
     { "name": "abilliontokens", "link": "https://github.com/abilliontokens" }
   ],
@@ -28,6 +28,6 @@
     "Saving to a device and reloading",
     "Host crt_sin/cos/tan/atan/sqrt/log so float results match the Xbox"
   ],
-  "tags": ["xbox", "static-recomp", "xbe", "xdk-5849", "d3d12"],
+  "tags": ["xbox", "static-recomp", "xbe", "xdk-5849", "d3d12", "vulkan", "linux"],
   "notes": "Boots from the retail USA XBE: 15,942 functions recompiled. Intro movies, title, menus, Create-an-Urb and the city load all run, and free-roam on the starting rooftop renders at ~60 fps (576-984 draws per frame) with walking, dialogue and socials. Fixed so far: a push-buffer render deadlock, vertex-shader constant packets, P8 palettes, the all-black gamma ramp, DirectSound PlayEx and Pause. Not yet exercised: saving to a device and reloading, districts past the starting rooftop, jobs and minigames. 108 of 238 XDK functions are still unmatched and trap if the game calls them."
 }

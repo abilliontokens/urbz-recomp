@@ -20,11 +20,50 @@
         {"name": "release", "displayName": "Release", "inherits": "base",
          "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
         {"name": "relwithdebinfo", "displayName": "RelWithDebInfo", "inherits": "base",
-         "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}}
+         "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}},
+        {
+            "name": "linux-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_FLAGS": "-march=x86-64-v2",
+                "CMAKE_CXX_FLAGS": "-march=x86-64-v2"
+            },
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux"}
+        },
+        {"name": "linux-debug", "displayName": "Linux Debug", "inherits": "linux-base",
+         "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
+        {"name": "linux-release", "displayName": "Linux Release", "inherits": "linux-base",
+         "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
+        {"name": "linux-relwithdebinfo", "displayName": "Linux RelWithDebInfo", "inherits": "linux-base",
+         "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}},
+        {"name": "host-tools", "displayName": "Host tools only (xbe_recomp, xbe_symbols) for windows-cross",
+         "inherits": "linux-base",
+         "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "XBE_HOST_TOOLS_ONLY": "ON"}},
+        {
+            "name": "windows-cross",
+            "displayName": "Windows x64 Release, cross-compiled (clang-cl + lld-link + xwin; cmake/windows-cross.cmake)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "toolchainFile": "${sourceDir}/cmake/windows-cross.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "XBE_HOST_TOOLS_DIR": "${sourceDir}/out/build/host-tools"
+            },
+            "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux"}
+        }
     ],
     "buildPresets": [
         {"name": "debug", "configurePreset": "debug"},
         {"name": "release", "configurePreset": "release"},
-        {"name": "relwithdebinfo", "configurePreset": "relwithdebinfo"}
+        {"name": "relwithdebinfo", "configurePreset": "relwithdebinfo"},
+        {"name": "linux-debug", "configurePreset": "linux-debug"},
+        {"name": "linux-release", "configurePreset": "linux-release"},
+        {"name": "linux-relwithdebinfo", "configurePreset": "linux-relwithdebinfo"},
+        {"name": "host-tools", "configurePreset": "host-tools"},
+        {"name": "windows-cross", "configurePreset": "windows-cross"}
     ]
 }

@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <iterator>
 
 #include <imgui.h>
 

@@ -2,7 +2,9 @@
 
 An unofficial native PC port of the original Xbox release of *The Urbz: Sims in the City* (USA),
 produced by statically recompiling the game's x86 XBE with the
-[XboxXBERecomp SDK](https://github.com/TGP482/XboxXBERecomp) (vendored in `sdk/`).
+[XboxXBERecomp SDK](https://github.com/TGP482/XboxXBERecomp) (vendored in `sdk/`). It builds for
+**Windows** (Direct3D 12 + XAudio2) and for **Linux** (Vulkan + SDL3), from the same recompiled
+code.
 
 This repository contains **no game code and no game assets**. It holds tooling, configuration and
 host-side glue only. You must supply your own legally acquired copy of the disc.
@@ -25,7 +27,25 @@ settings (display mode, resolution, aspect ratio, ultrawide, vsync, frame cap, H
 anisotropic filtering, the modern HUD) and the game's own console cheats, which are off until ticked
 and never saved, and **F2** the frame-time graph.
 
-HDR is off by default, and off the picture is exactly what it always was. Auto uses HDR when the
+## Run it on Linux
+
+Same deal: you supply the game.
+
+1. Download `Urbz-linux-x64.tar.zst` from
+   [Releases](https://github.com/abilliontokens/urbz-recomp/releases/latest) and unpack it
+   (`tar --zstd -xf Urbz-linux-x64.tar.zst`).
+2. Put your disc image in the `assets` folder beside `Urbz`, exactly as on Windows.
+3. Run `./Urbz`.
+
+You need an x86-64 machine with a Vulkan 1.3 driver and the Vulkan loader (`vulkan-icd-loader`,
+`libvulkan1`); glslang travels in `lib/` beside the binary, SDL3 and Dear ImGui are linked in.
+Wayland and X11 both work - the window goes through SDL3. F1 and F2 are the same panels as on
+Windows, with one honest difference: **HDR is Windows-only**, and the F1 panel says so rather than
+offering a switch that does nothing. Everything else - display mode, resolution, aspect ratio,
+ultrawide, vsync, frame cap, render scale, anisotropic filtering, the modern HUD, the cheats - is
+the same, and `settings.toml`, `logs/`, `hdd/` and `shadercache/` land beside the binary as usual.
+
+HDR is a Windows-only path. It is off by default, and off the picture is exactly what it always was. Auto uses HDR when the
 display the window is on has it turned on in Windows, and On asks for it whatever the display reports;
 the panel says underneath whether HDR is really on and, if not, why. Paper white is how bright the
 game's white is drawn, 100-400 nits. Peak brightness is the most any highlight may reach, and left at
@@ -50,8 +70,8 @@ capture (its `frame.txt` also lists each texture it dumps as `tex_<address>.bmp`
 held it: how many of its levels are all zero and how it begins, so a black dump tells a texture the
 game left zero from one decoded wrong), `XBE_CAPTURE_PROBE=<x>,<y>` (fractions of the picture, e.g.
 `0.85,0.45`) makes that capture name every clear and draw that changed the pixel there or reached
-it, `XBE_D3D12_DEBUG=1` the Direct3D 12 debug layer, and `XBE_BIND_SCALE`/`XBE_BIND_LOG` tune and
-trace the input binding scale. `XBE_MUTE=1` starts the game with audio silenced.
+it, `XBE_D3D12_DEBUG=1` the Direct3D 12 debug layer (Windows), and `XBE_BIND_SCALE`/`XBE_BIND_LOG`
+tune and trace the input binding scale. `XBE_MUTE=1` starts the game with audio silenced.
 `XBE_STATE_VERIFY=1` logs any draw state that changed without being marked for the render thread,
 and `XBE_NO_STATE_DIRTY=1` compares all of it on every draw instead of the marked part. The
 `URBZ_*` environment variables (`URBZ_NO_STEP`, `URBZ_NO_ZOOM`, `URBZ_NO_REPEAT`, `URBZ_NO_UIGATE`,
@@ -128,12 +148,16 @@ The build is pinned to this exact XBE. A different region or revision needs its 
 assets/        your disc image and/or the files extracted from it (never committed)
 config/        game.toml - the recompiler config written by xbe_symbols, then hand-corrected
 docs/          analysis and bring-up notes
-sdk/           XboxXBERecomp SDK checkout (recompiler, runtime, XDK HLE, D3D12 renderer)
+sdk/           XboxXBERecomp SDK checkout (recompiler, runtime, XDK HLE, D3D12 and Vulkan renderers)
 src/common/    host-side code: game_info.cpp defines app::kGame, input_kbm.cpp the keyboard pad
 src/game/      hooks and overrides for recompiled functions (src/game is excluded from the host glob)
 tools/         xiso_extract.py (XDVDFS reader), xbe_info.py (XBE reader), env.bat (toolchain PATH)
+cmake/         windows-cross.cmake - clang-cl/lld-link toolchain for cross-building the exe on Linux
 generated/     recompiler output (never committed)
 ```
+
+`build.bat` / `release.bat` build and package on Windows; `build.sh` / `release.sh` do the same on
+Linux, and `release.sh` also picks up a cross-built `Urbz.exe` when one is there.
 
 ## Build it from source
 
@@ -149,15 +173,36 @@ generated/     recompiler output (never committed)
    python tools/xbe_info.py assets/default.xbe --json build/xbe_info.json --markdown docs/xbe-analysis.md
    ```
    The SHA-1 must match the table above.
-4. Install the toolchain and build:
+4. Install the toolchain and build.
+
+   Windows:
    ```
    tools\env.bat
    build.bat
    ```
    `build.bat` configures the `release` preset, builds `xbe_symbols`, writes `config/game.toml`
    from the XBE and the SDK's XDK 5849 signatures, then recompiles the XBE and builds `Urbz.exe`
-   into `out/build/release`. The first build is long: it compiles one C++ function per guest
-   function.
+   into `out/build/release`.
+
+   Linux (clang, cmake, ninja, the Vulkan headers and loader, glslang, zlib):
+   ```
+   ./build.sh
+   ```
+   Same three steps against the `linux-release` preset, into `out/build/linux-release/Urbz`.
+
+   The first build is long either way: it compiles one C++ function per guest function. The
+   recompiler's output is platform-neutral, so `generated/` is shared between the two targets.
+
+5. Package a release with `release.bat` (Windows) or `./release.sh` (Linux).
+
+   The Windows exe can also be cross-built from Linux, which is how the released one is made:
+   install [xwin](https://github.com/Jake-Shadle/xwin) and splat an MSVC/Windows SDK cache, then
+   ```
+   cmake --preset host-tools    && cmake --build --preset host-tools
+   cmake --preset windows-cross && cmake --build --preset windows-cross
+   ```
+   `host-tools` builds `xbe_recomp` for this machine (the cross build runs it rather than building
+   it for Windows); the exe lands in `out/build/windows-cross/Urbz.exe` and `./release.sh` zips it.
 
 ## Working on the port
 

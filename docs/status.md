@@ -756,6 +756,11 @@ audio: sdl stream ok, device 'HD-Audio Generic Digital Stereo (HDMI)' 48000 Hz 2
 open D:\data\audiostr.xwb
 ```
 
+Both SDL3 video backends were exercised. The run above is the Wayland one; with `WAYLAND_DISPLAY`
+unset and `DISPLAY=:0` the same binary logs `Display: X11 (DISPLAY=:0)` and presents 1980 frames at
+**59.9 fps**, 303 draws, zero errors. The X server here is Xwayland, so what that proves is SDL3's
+X11 backend and the Vulkan `VK_KHR_xlib/xcb_surface` path, not a session on a native X server.
+
 Driven from the title with `URBZ_STEP`, the Linux build walks the same menu path the Windows build
 does - title, main menu, New Game, through every Create-an-Urb page, to name entry - and the scene
 counts follow it: 1 draw on the title, 54 on the main menu, 528-585 in Create-an-Urb, 341 on the

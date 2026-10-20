@@ -65,27 +65,28 @@ tar --zstd -tf "$TARBALL" | sed 's/^/  /'
 # The cross-built Windows exe, when one is present. It is packaged from here
 # rather than from release.bat because this machine has no Windows: the exe is
 # produced by the windows-cross preset (clang-cl + lld-link against an xwin
-# MSVC/Windows SDK cache).
+# MSVC/Windows SDK cache). Same name and same flat layout release.bat makes, so
+# the download the README names does not change with the machine it was built on.
 WINEXE="out/build/windows-cross/$EXE.exe"
 if [ -f "$WINEXE" ]; then
-    WINSTAGE="out/package/$EXE-win64"
+    WINSTAGE="out/package/windows"
     rm -rf "$WINSTAGE"
     mkdir -p "$WINSTAGE/assets"
     cp "$WINEXE" "$WINSTAGE/"
     cp README.md "$WINSTAGE/"
     [ -f sdk/THIRD_PARTY.txt ] && cp sdk/THIRD_PARTY.txt "$WINSTAGE/"
     cp "$STAGE/assets/PUT_YOUR_GAME_HERE.txt" "$WINSTAGE/assets/"
-    # Imports MSVCP140.dll and VCRUNTIME140.dll: the CRT is dynamic, so a clean
-    # Windows needs the Visual C++ redistributable. Everything else it imports
-    # (d3d12, dxgi, D3DCOMPILER_47, the api-ms-win-crt-* UCRT set) ships with
-    # Windows 10 and later.
+    # Imports MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll: the CRT is
+    # dynamic, so a clean Windows needs the Visual C++ redistributable. Everything
+    # else it imports (d3d12, dxgi, D3DCOMPILER_47, the api-ms-win-crt-* UCRT set,
+    # dbghelp, dwmapi, ws2_32) ships with Windows 10 and later.
     cat > "$WINSTAGE/READ_ME_FIRST.txt" <<'EOF'
 Needs the Microsoft Visual C++ Redistributable (2015-2022, x64) if you do not
 already have it: https://aka.ms/vs/17/release/vc_redist.x64.exe
 
 Put your own copy of the game in assets\ - see assets\PUT_YOUR_GAME_HERE.txt.
 EOF
-    rm -f "$EXE-win64.zip"
-    (cd "$WINSTAGE/.." && 7z a -tzip -bso0 -bsp0 "../../$EXE-win64.zip" "$EXE-win64" >/dev/null)
-    echo "wrote $EXE-win64.zip ($(du -h "$EXE-win64.zip" | cut -f1))"
+    rm -f "$EXE.zip"
+    (cd "$WINSTAGE" && 7z a -tzip -bso0 -bsp0 "../../../$EXE.zip" ./* >/dev/null)
+    echo "wrote $EXE.zip ($(du -h "$EXE.zip" | cut -f1))"
 fi

@@ -40,5 +40,4 @@ __pycache__/
 # Release artifacts: built by release.sh / release.bat, attached to a GitHub
 # release, never committed.
 /Urbz-linux-x64.tar.zst
-/Urbz-win64.zip
 /Urbz.zip
